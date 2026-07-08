@@ -73,3 +73,11 @@
 .design-studio .ds-preview, .design-studio .ds-testwrap { flex:1; min-height:0; display:flex; flex-direction:column; }
 .design-studio .ds-preview { align-items:center; justify-content:stretch; padding:12px; }
 .design-studio .ds-stage { width:100%; height:100%; background:#0B0D0F; border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
+
+/* --- Test canvas --- */
+.design-studio .ds-testsplit { flex:1; min-height:0; display:flex; }
+.design-studio .ds-testsplit .ds-preview { flex:1; }
+.design-studio .ds-testinspect { width:260px; flex:none; border-left:1px solid var(--ds-border); padding:12px; overflow:auto; display:flex; flex-direction:column; gap:8px; }
+.design-studio .ds-testpicked { color:var(--ds-accent); font-size:12px; word-break:break-all; }
+.design-studio .ds-a11y { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--ds-text-2); }
+.design-studio .ds-a11y li { border-top:1px solid var(--ds-border); padding-top:4px; }

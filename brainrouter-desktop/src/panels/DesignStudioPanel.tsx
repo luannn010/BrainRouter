@@ -4,6 +4,7 @@ import './design/designStudio.css';
 import { SystemView } from './design/SystemView.js';
 import { usePrototypes } from '../lib/design/usePrototypes.js';
 import { PreviewCanvas, type PreviewHandle, type Device } from './design/PreviewCanvas.js';
+import { TestCanvas } from './design/TestCanvas.js';
 
 export type StudioTab = 'system' | 'preview' | 'test';
 
@@ -19,6 +20,7 @@ export function DesignStudioPanel({ workspaceRoot, branch }: { workspaceRoot?: s
   const protos = usePrototypes();
   const [device, setDevice] = useState<Device>('desktop');
   const previewRef = useRef<PreviewHandle>(null);
+  const [picked, setPicked] = useState<string | null>(null);
 
   return (
     <div className="design-studio">
@@ -47,7 +49,7 @@ export function DesignStudioPanel({ workspaceRoot, branch }: { workspaceRoot?: s
               <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device} />
             </div>
           )}
-          {tab === 'test' && <div className="ds-empty">Test canvas — Task 8.</div>}
+          {tab === 'test' && <TestCanvas workspaceRoot={workspaceRoot} selected={protos.selected} device={device} picked={picked} onPick={setPicked} />}
         </div>
         {chatOpen && <div className="ds-empty" style={{ width: 320, borderLeft: '1px solid var(--ds-border)' }}>Fix chat — Task 9.</div>}
       </div>
