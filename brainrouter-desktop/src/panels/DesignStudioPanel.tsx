@@ -1,6 +1,7 @@
 // brainrouter-desktop/src/panels/DesignStudioPanel.tsx
 import React, { useState } from 'react';
 import './design/designStudio.css';
+import { SystemView } from './design/SystemView.js';
 
 export type StudioTab = 'system' | 'preview' | 'test';
 
@@ -25,7 +26,7 @@ export function DesignStudioPanel({ workspaceRoot, branch }: { workspaceRoot?: s
       </div>
       <div className="ds-body">
         <div className="ds-view" role="tabpanel">
-          {tab === 'system' && <div className="ds-empty">System view — Task 6.</div>}
+          {tab === 'system' && <SystemView branch={branch} commit={null} iso={new Date().toISOString()} />}
           {tab === 'preview' && <div className="ds-empty">Preview canvas — Task 7.</div>}
           {tab === 'test' && <div className="ds-empty">Test canvas — Task 8.</div>}
         </div>
