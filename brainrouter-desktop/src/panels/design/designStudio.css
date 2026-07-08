@@ -64,3 +64,12 @@
 .design-studio .ds-node--inferred { border:1px dashed var(--ds-border-strong); }
 .design-studio .ds-radii { display:flex; gap:10px; margin-top:12px; }
 .design-studio .ds-radii-chip { border:1px solid var(--ds-border-strong); padding:10px 12px; color:var(--ds-text-2); font-size:12px; }
+
+/* --- Preview / Test canvases --- */
+.design-studio .ds-canvas-bar { display:flex; align-items:center; gap:8px; padding:8px; border-bottom:1px solid var(--ds-border); background:var(--ds-surface); }
+.design-studio .ds-select { background:var(--ds-bg); color:var(--ds-text); border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); padding:6px 8px; font:inherit; font-family:var(--ds-mono); font-size:12px; }
+.design-studio .ds-iconbtn { background:transparent; color:var(--ds-text-2); border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); padding:6px 10px; font:inherit; cursor:pointer; }
+.design-studio .ds-iconbtn[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); }
+.design-studio .ds-preview, .design-studio .ds-testwrap { flex:1; min-height:0; display:flex; flex-direction:column; }
+.design-studio .ds-preview { align-items:center; justify-content:stretch; padding:12px; }
+.design-studio .ds-stage { width:100%; height:100%; background:#0B0D0F; border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
