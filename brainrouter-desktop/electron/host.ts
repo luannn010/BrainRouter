@@ -27,6 +27,7 @@ import type { HostContext } from './host/context.js';
 // UI-TEST fusion — the web UI-testing host (extract, drive, flows/stories, run
 // reports, auto-host). Wired into the query router via HostContext.uitest.
 import { createUiTestHost } from './uitestHost.js';
+import { createDesignHost } from './designHost.js';
 import { exec, execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { InteractionBroker, type AgentEvent, type RecordLifecycleAction } from '@kinqs/brainrouter-agent-protocol';
 // Deep imports into the CLI's built runtime (no "exports" field = allowed).
@@ -952,6 +953,7 @@ async function main(): Promise<void> {
 
   const ctx: HostContext = {
     uitest,
+    design: createDesignHost(workspaceRoot),
     workspaceRoot, wsGit, fileListCache, listWorkspaceFilesCached, send,
     computerUseBridge, secretBridge, config,
     getLlm: () => llm, setLlm: (next) => { llm = next; },

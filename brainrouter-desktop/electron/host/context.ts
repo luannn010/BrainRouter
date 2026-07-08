@@ -29,6 +29,7 @@ import type { ArtifactRecord } from '@kinqs/brainrouter-types';
 import type { GithubConnectorClient, GithubConnectorPermissionClient, GithubConnectorValidationClient, McpConnectorClient } from '@kinqs/brainrouter-core/connectors';
 import type { ComputerUseBridge, SecretBridge, TermSession } from './helpers.js';
 import type { UiTestHost } from '../uitestHost.js';
+import type { DesignHost } from '../designHost.js';
 
 type WsGit = ReturnType<typeof resolveWorkspaceGit>;
 
@@ -52,6 +53,8 @@ export interface HostContext {
   // ── Core runtime ──────────────────────────────────────────────────────────
   // UI-TEST fusion — the web UI-testing host the query router drives.
   uitest: UiTestHost;
+  // DESIGN STUDIO — lists/reads/seeds prototypes for the preview + test canvases.
+  design: DesignHost;
   workspaceRoot: string;
   wsGit: WsGit;
   fileListCache: WorkspaceFileListCache;

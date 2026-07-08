@@ -332,6 +332,7 @@ import type { QueryHandler } from '../hostCore.js';
 export function buildQueries(ctx: HostContext): Record<string, QueryHandler> {
   const {
     uitest,
+    design,
     workspaceRoot,
     wsGit,
     fileListCache,
@@ -3045,6 +3046,18 @@ export function buildQueries(ctx: HostContext): Record<string, QueryHandler> {
         }
       },
       'uitest:driver-stop': async () => uitest.stopDriver(),
+      'design:list-prototypes': () => {
+        try { return design.listPrototypes(); }
+        catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
+      'design:read-prototype': (args) => {
+        const id = typeof args.id === 'string' ? args.id : '';
+        return id ? design.readPrototype(id) : { error: 'missing id' };
+      },
+      'design:ensure-seed': () => {
+        try { return design.ensureSeed(); }
+        catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
       // Actions — host-side mutations the Settings dialog / palette trigger.
       // They ride the query channel (free-form names, result routing by id).
       'action:clear': () => { getActiveAgent().clearHistory(); return { ok: true }; },
