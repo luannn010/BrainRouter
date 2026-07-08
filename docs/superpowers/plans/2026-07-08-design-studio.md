@@ -1228,7 +1228,7 @@ The Test canvas reuses ONE preview webview instance (shared through the parent) 
 
 ```tsx
 // brainrouter-desktop/src/panels/design/TestCanvas.tsx
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { WebviewEl } from '../../lib/uitest/webviewBridge.js';
 import { startPick, readPick, cancelPick, a11ySnapshot, tap, typeText } from '../../lib/uitest/webviewBridge.js';
 import { PreviewCanvas, type PreviewHandle, type Device } from './PreviewCanvas.js';
@@ -1248,20 +1248,33 @@ export function TestCanvas({ workspaceRoot, selected, device, picked, onPick }: 
 
   const wv = (): WebviewEl | null => previewRef.current?.getWebview() ?? null;
 
+  // Track the in-flight pick loop so it can't outlive the component (leak on tab switch).
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopPickLoop = (): void => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+  };
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+  }, []);
+
   const doPick = async (): Promise<void> => {
     const el = wv(); if (!el) return;
+    stopPickLoop(); // cancel any in-flight pick before starting a new one
     setStatus('Click an element in the preview…');
     await startPick(el);
-    const poll = setInterval(async () => {
+    pollRef.current = setInterval(async () => {
       const r = await readPick(el);
       if (r) {
-        clearInterval(poll);
+        stopPickLoop();
         const ref = r.testid ?? r.suggestion ?? null;
         onPick(ref);
         setStatus(ref ? `Picked [data-testid="${ref}"]` : `Picked <${r.tag}> "${r.text.slice(0, 24)}" (no testid)`);
       }
     }, 300);
-    setTimeout(() => { clearInterval(poll); void cancelPick(el); }, 20_000);
+    timeoutRef.current = setTimeout(() => { stopPickLoop(); void cancelPick(el); }, 20_000);
   };
 
   const doA11y = async (): Promise<void> => { const el = wv(); if (el) setA11y(await a11ySnapshot(el)); };
