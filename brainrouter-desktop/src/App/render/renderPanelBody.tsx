@@ -34,6 +34,7 @@ const CIPanel = lazy(() => import('../../panels/ci/CIPanel.js').then((m) => ({ d
 // UI-TEST fusion — the embedded Browser panel (webview + tool rail) is only
 // opened for UI testing; lazy so its webview bridge stays out of first paint.
 const BrowserPanel = lazy(() => import('../../panels/BrowserPanel.js').then((m) => ({ default: m.BrowserPanel })));
+const DesignStudioPanel = lazy(() => import('../../panels/DesignStudioPanel.js').then((m) => ({ default: m.DesignStudioPanel })));
 
 type Query = (id: string, name: string, args?: Record<string, unknown>) => void;
 
@@ -254,6 +255,8 @@ export function buildRenderPanelBody(ctx: RenderPanelBodyCtx): (id: PanelId) => 
       case 'workflows': return <WorkflowsPanel />;
       case 'memory': return <MemoryPanel />;
       case 'prototype': return <PrototypePanel />;
+      case 'design-studio':
+        return <Suspense fallback={<div className="row status"><span className="spinner" /> Loading…</div>}><DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} /></Suspense>;
       case 'schedule': return <SchedulePanel schedules={schedules} now={Date.now()}
         onAdd={(kind, expr, command) => { q('q-schedule', 'schedule-add', { kind, expr, command }); setTimeout(() => q('q-schedule', 'schedule-list'), 150); }}
         onRemove={(id) => { q('q-schedule', 'schedule-remove', { id }); setTimeout(() => q('q-schedule', 'schedule-list'), 150); }}

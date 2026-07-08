@@ -1,0 +1,35 @@
+/* brainrouter-desktop/src/panels/design/designStudio.css */
+/* Memory Instrument — scoped so the surrounding app chrome is untouched. */
+.design-studio {
+  --ds-bg:#0B0D0F; --ds-surface:#14171A; --ds-overlay:#1E2227;
+  --ds-border:rgba(255,255,255,0.08); --ds-border-strong:rgba(255,255,255,0.14);
+  --ds-text:#ECEFF2; --ds-text-2:#9BA3AC; --ds-text-3:#5E6670;
+  --ds-accent:#34C28E; --ds-accent-press:#28A87C; --ds-accent-wash:rgba(52,194,142,0.14);
+  --ds-heat-hot:#E0A063; --ds-heat-warm:#C98F6E; --ds-heat-cool:#6B7480; --ds-heat-cold:#3C434B;
+  --ds-danger:#E5675F; --ds-warn:#D9A441;
+  --ds-font:"Geist",ui-sans-serif,system-ui,sans-serif;
+  --ds-mono:"Geist Mono",ui-monospace,"SF Mono",Consolas,monospace;
+  --ds-radius-chip:4px; --ds-radius-control:6px; --ds-radius-card:10px; --ds-radius-panel:12px;
+  --ds-elev-inset:inset 0 1px 0 rgba(255,255,255,0.05);
+  --ds-shadow-sm:0 1px 2px rgba(0,0,0,0.35),0 1px 1px rgba(0,0,0,0.22);
+  display:flex; flex-direction:column; height:100%;
+  background:var(--ds-bg); color:var(--ds-text);
+  font-family:var(--ds-font); font-size:14px; line-height:1.5;
+}
+.design-studio *[data-mono], .design-studio .ds-mono { font-family:var(--ds-mono); }
+.design-studio .ds-nav { display:flex; gap:2px; padding:8px; border-bottom:1px solid var(--ds-border); background:var(--ds-surface); align-items:center; }
+.design-studio .ds-seg { background:transparent; color:var(--ds-text-2); border:0; padding:6px 12px; border-radius:var(--ds-radius-control); font:inherit; cursor:pointer; }
+.design-studio .ds-seg[aria-selected="true"] { background:var(--ds-accent-wash); color:var(--ds-text); box-shadow:inset 0 0 0 1px var(--ds-border-strong); }
+.design-studio .ds-nav-spacer { flex:1; }
+.design-studio .ds-chat-toggle { background:transparent; color:var(--ds-text-2); border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); padding:6px 10px; font:inherit; cursor:pointer; }
+.design-studio .ds-chat-toggle[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); }
+.design-studio .ds-body { flex:1; min-height:0; display:flex; }
+.design-studio .ds-view { flex:1; min-width:0; overflow:auto; }
+.design-studio .ds-eyebrow { font-family:var(--ds-mono); font-size:12px; letter-spacing:0.04em; text-transform:uppercase; color:var(--ds-text-2); }
+.design-studio .ds-card { background:var(--ds-surface); border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); }
+.design-studio .ds-empty { color:var(--ds-text-3); padding:24px; font-family:var(--ds-mono); font-size:13px; }
+/* live status dot — the one signature loop */
+.design-studio .ds-dot { width:8px; height:8px; border-radius:9999px; background:var(--ds-accent); display:inline-block; }
+.design-studio .ds-dot--live { animation:ds-breathe 2.4s ease-in-out infinite; }
+@keyframes ds-breathe { 0%,100%{opacity:.5} 50%{opacity:1} }
+@media (prefers-reduced-motion: reduce) { .design-studio .ds-dot--live { animation:none; } }
