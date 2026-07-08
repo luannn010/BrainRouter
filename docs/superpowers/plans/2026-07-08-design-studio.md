@@ -1538,3 +1538,17 @@ Plus enabling infra: Task 4 (host service + IPC), Task 5 (registration + shell),
 **Placeholder scan:** no TBD/TODO; every code step carries full code; every test step has real assertions and exact run commands. The only intentional deferrals are the four labelled follow-ups in Task 10 Notes, explicitly out of scope.
 
 **Known integration checkpoints to verify during execution (not gaps, but confirm-before-wiring):** in Task 5 Step 3, confirm `info`/`branches` are in `renderPanelBody`'s closure (fallback provided); in Task 4 Steps 5–6, match the exact `HostContext` literal assembly in `host.ts` (the plan gives the field to add, adapt to the local variable names).
+
+---
+
+## Post-final-review corrections (applied in commit `7b05fda0`)
+
+A whole-branch review after implementation caught issues the per-task (single-diff) reviews couldn't see. The shipped code corrects them; apply these when following the plan:
+
+1. **Task 9 — scope the UI-fix chat to its OWN turn (was a correctness bug).** The dock's `onEvent` listener subscribes to the same `window.brainrouter.onEvent` bus as the main chat, so it received *every* turn's `assistant-delta`/`assistant-turn-end` — meaning any unrelated main-chat turn polluted the dock log and fired a phantom preview reload. Fix: add `const runningRef = useRef(false);`, `if (!runningRef.current) return;` at the top of the `onEvent` callback, set `runningRef.current = true` in `submit`, and `runningRef.current = false` in the `assistant-turn-end` branch. The dock now reacts only while it has an in-flight fix.
+2. **Task 9 — `hidden: true` does NOT fully isolate the turn.** It hides the (verbose) fix *prompt* from the transcript, but the turn still runs in the ACTIVE session, so its response also streams to the main chat and sets the main running state. Keep `hidden: true` (and drop the `as never` cast — `AgentCommand` really declares `hidden?: boolean`), but correct the comment: full isolation is the "dedicated design sub-session" follow-up, not v1.
+3. **Task 9 — reload the mounted canvas after a fix.** `onApplied` reloaded only the Preview-tab webview (null on the Test tab), so a fix was invisible while manual-testing. Fix: `onApplied={() => { if (tab === 'preview') previewRef.current?.reload(); else setTab('preview'); setTimeout(() => protos.refresh(), 400); }}` — always surfaces the result on Preview.
+4. **Task 4 — flat-`proto/` read hardening.** In `resolveAuthorized`, add `if (path.dirname(abs) !== protoDir) return null;` so `readPrototype` mirrors the flat set `listPrototypes` enumerates.
+5. **Task 6 — tokenize the heat-chip radius.** `.ds-heat-chip` used `border-radius:3px`; change to `var(--ds-radius-chip)` (4px) to stay on the 4/6/10/12 scale.
+
+Still deferred (documented v1 limitations, unchanged): Preview and Test each hold a **separate** `<webview>` (tab switch tears down/rebuilds; picked element and in-page state are lost) — the "shared webview across Preview/Test" follow-up in Task 10 Notes is the proper fix; and the "dedicated design sub-session" follow-up for true chat isolation.
