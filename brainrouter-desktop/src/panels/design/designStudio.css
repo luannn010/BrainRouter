@@ -50,7 +50,7 @@
 .design-studio .ds-swatch-role { color:var(--ds-text-2); font-size:12px; }
 .design-studio .ds-heat { display:flex; gap:0; border-radius:var(--ds-radius-card); overflow:hidden; border:1px solid var(--ds-border); width:max-content; }
 .design-studio .ds-heat-stop { display:flex; flex-direction:column; gap:4px; padding:10px 14px; font-size:12px; align-items:center; }
-.design-studio .ds-heat-chip { width:28px; height:16px; border-radius:3px; }
+.design-studio .ds-heat-chip { width:28px; height:16px; border-radius:var(--ds-radius-chip); }
 .design-studio .ds-type { display:flex; flex-direction:column; gap:8px; }
 .design-studio .ds-type-row { color:var(--ds-text); }
 .design-studio .ds-specimens { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }

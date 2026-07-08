@@ -56,7 +56,13 @@ export function DesignStudioPanel({ workspaceRoot, branch }: { workspaceRoot?: s
           <DesignChat
             selected={protos.selected}
             picked={picked}
-            onApplied={() => { previewRef.current?.reload(); setTimeout(() => protos.refresh(), 400); }}
+            onApplied={() => {
+              // Show the fix on the Preview canvas regardless of the active tab: reload if
+              // it's already mounted, else switch to Preview (which mounts fresh and loads
+              // the just-edited file). The Test tab owns a separate webview (v1 limitation).
+              if (tab === 'preview') previewRef.current?.reload(); else setTab('preview');
+              setTimeout(() => protos.refresh(), 400);
+            }}
           />
         )}
       </div>

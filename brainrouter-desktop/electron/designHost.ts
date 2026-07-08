@@ -33,6 +33,7 @@ export function createDesignHost(workspaceRoot: string): DesignHost {
     const abs = path.resolve(workspaceRoot, rel);
     const inside = path.relative(workspaceRoot, abs);
     if (inside.startsWith('..') || path.isAbsolute(inside)) return null;
+    if (path.dirname(abs) !== protoDir) return null; // flat proto/ only — mirror listPrototypes
     return abs;
   };
 

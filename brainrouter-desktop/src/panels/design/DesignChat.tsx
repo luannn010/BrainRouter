@@ -15,18 +15,24 @@ export function DesignChat({ selected, picked, onApplied }: {
   const [live, setLive] = useState('');
   const [running, setRunning] = useState(false);
   const liveRef = useRef('');
+  const runningRef = useRef(false);
 
-  // Subscribe to agent stream in isolation (own liveText; does not touch the main chat state).
+  // Subscribe to the agent stream. Gate on runningRef so the dock reacts ONLY to
+  // its OWN in-flight fix turn — the main chat shares this same onEvent bus, so
+  // without the gate every unrelated main-chat turn would pollute the dock log
+  // and fire a phantom preview reload.
   useEffect(() => {
     const off = window.brainrouter.onEvent((msg: unknown) => {
+      if (!runningRef.current) return;
       const e = ((msg as { event?: { kind?: string; text?: string } }).event ?? msg) as { kind?: string; text?: string };
       if (e?.kind === 'assistant-delta') { liveRef.current += e.text ?? ''; setLive(liveRef.current); }
       else if (e?.kind === 'assistant-turn-end') {
         const text = liveRef.current.trim();
         liveRef.current = ''; setLive('');
+        runningRef.current = false;
         setRunning(false);
         if (text) setLines((l) => [...l, { role: 'brainrouter', text }]);
-        onApplied(); // reload the preview — the file was just edited
+        onApplied(); // reload/refresh the preview — the file was just edited
       }
     });
     return off;
@@ -37,13 +43,12 @@ export function DesignChat({ selected, picked, onApplied }: {
     if (!instruction || !selected || running) return;
     const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked });
     setLines((l) => [...l, { role: 'you', text: instruction }]);
-    setDraft(''); setRunning(true); liveRef.current = ''; setLive('');
-    // `hidden: true` keeps this design-fix turn OUT of the main chat transcript
-    // (the dock renders its own stream via onEvent). AgentCommand supports it:
-    // { kind:'start-turn'; prompt; hidden?; images? }. If, at runtime, `hidden`
-    // also suppresses the assistant-delta events the dock listens for, drop it
-    // and accept a shared transcript for v1 (see Task 10 Notes).
-    window.brainrouter.send({ kind: 'start-turn', prompt, hidden: true } as never);
+    setDraft(''); runningRef.current = true; setRunning(true); liveRef.current = ''; setLive('');
+    // hidden:true hides the (verbose) fix PROMPT from the transcript. NOTE: the turn
+    // still runs in the ACTIVE session, so its response also streams to the main chat
+    // and sets the main running state — full isolation (a dedicated design sub-session)
+    // is a documented Task-10 follow-up, not done in v1.
+    window.brainrouter.send({ kind: 'start-turn', prompt, hidden: true });
   };
 
   return (
