@@ -1,5 +1,5 @@
 // brainrouter-desktop/src/panels/DesignStudioPanel.tsx
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import './design/designStudio.css';
 import { CanvasView } from './design/CanvasView.js';
 import { BrandsView } from './design/BrandsView.js';
@@ -28,7 +28,8 @@ export function DesignStudioPanel({ workspaceRoot, branch }: { workspaceRoot?: s
   // Bumped after an agent edit so the Canvas re-reads every frame's HTML.
   const [canvasKey, setCanvasKey] = useState(0);
 
-  const openInDesigns = (id: string): void => { protos.select(id); setTab('designs'); };
+  // Stable identity so the Canvas's memoised frames don't re-render on every tick.
+  const openInDesigns = useCallback((id: string): void => { protos.select(id); setTab('designs'); }, [protos.select]);
 
   return (
     <div className="design-studio">

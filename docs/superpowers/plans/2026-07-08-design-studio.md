@@ -1551,4 +1551,17 @@ A whole-branch review after implementation caught issues the per-task (single-di
 4. **Task 4 — flat-`proto/` read hardening.** In `resolveAuthorized`, add `if (path.dirname(abs) !== protoDir) return null;` so `readPrototype` mirrors the flat set `listPrototypes` enumerates.
 5. **Task 6 — tokenize the heat-chip radius.** `.ds-heat-chip` used `border-radius:3px`; change to `var(--ds-radius-chip)` (4px) to stay on the 4/6/10/12 scale.
 
-Still deferred (documented v1 limitations, unchanged): Preview and Test each hold a **separate** `<webview>` (tab switch tears down/rebuilds; picked element and in-page state are lost) — the "shared webview across Preview/Test" follow-up in Task 10 Notes is the proper fix; and the "dedicated design sub-session" follow-up for true chat isolation.
+Still deferred (documented v1 limitations, unchanged): the "dedicated design sub-session" follow-up for true chat isolation.
+
+---
+
+## v2 — Design as a workspace tab, restructured into Canvas · Brands · Designs
+
+Shipped after v1, superseding the `System | Preview | Test` sub-tabs:
+
+1. **Design is now a top-level workspace mode** (`Chat · Code · Track · Design`), not just a Views side-panel. The mode union widened across `App.tsx`, `useAppEffects.ts`, `MainContent.tsx`, `Sidebar.tsx`, `TopbarRight.tsx`. Design inherits `shell` access (only `chat` maps to `read`), which the UI-fix chat needs. The studio **keeps the right-hand `ViewsRail`**, so Atlas / Files / Artifacts / Review work beside the canvas.
+2. **Canvas** — an infinite pan/zoom map of every prototype flow. Frames are sandboxed `srcdoc` iframes (`allow-scripts`, opaque origin, `pointer-events:none` — a map, not a play surface) laid out in flows with bezier connectors. Backed by a new batched host query **`design:read-prototypes`** (one round-trip, capped at 24 frames / 512KB each, oversized frames dropped).
+3. **Brands** — the reproducible identity: signature, colour, heat ramp, type, spacing, shape, elevation, motion, iconography, voice, components, do/don't guardrails and a ship checklist. Rendered from the token model + `brand.ts`, so the sheet cannot drift from the code.
+4. **Designs** — `files │ preview │ flow inspector`, sharing **ONE** webview. `SystemView → BrandsView`, `TestCanvas → InspectorRail` (which no longer owns a webview).
+
+**This retires the v1 "separate Preview/Test webviews" limitation** — what you drive is exactly the frame you see, and a fix reloads the one canvas.
