@@ -43,11 +43,11 @@ export function TopbarRight(p: TopbarRightProps): React.ReactElement {
     sidePanelOpen, sideWidth, setSidePanelOpen, sideFullScreen, setSideFullScreen,
     sideTabs, activeSideTab, ensurePanel, openBottomDock, pop, setPop, openSettings,
   } = p;
-  // Environment and bottom-terminal toggles are Code-only. Track still has the
-  // right-side views rail for PR / checks, Atlas, tasks, and related project
-  // surfaces.
+  // Environment and bottom-terminal toggles are Code-only. Track and Design still
+  // have the right-side views rail — Track for PR / checks / tasks, Design for the
+  // same tool surfaces (Atlas, Files, Artifacts) beside the studio.
   const isCode = mode === 'code';
-  const hasRightRail = isCode || mode === 'track';
+  const hasRightRail = isCode || mode === 'track' || mode === 'design';
   // The pill is absolute, pinned to the window's right edge. When the side rail
   // is open (and not full-screen), pin it to the LEFT of the rail instead so it
   // floats over the chat — otherwise it overlays the rail's tab strip (covering

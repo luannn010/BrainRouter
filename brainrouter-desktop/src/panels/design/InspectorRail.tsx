@@ -1,25 +1,26 @@
-// brainrouter-desktop/src/panels/design/TestCanvas.tsx
+// brainrouter-desktop/src/panels/design/InspectorRail.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import type { WebviewEl } from '../../lib/uitest/webviewBridge.js';
 import { startPick, readPick, cancelPick, a11ySnapshot, tap, typeText } from '../../lib/uitest/webviewBridge.js';
-import { PreviewCanvas, type PreviewHandle, type Device } from './PreviewCanvas.js';
-import type { PrototypeEntry } from '../../lib/design/prototypeMeta.js';
+import type { PreviewHandle } from './PreviewCanvas.js';
 
-export function TestCanvas({ workspaceRoot, selected, device, picked, onPick }: {
-  workspaceRoot?: string;
-  selected: PrototypeEntry | null;
-  device: Device;
+/**
+ * The flow-test rail. It drives the SHARED preview webview through the existing
+ * uitest bridge — it deliberately owns no webview of its own, so what you test is
+ * exactly the frame you are looking at.
+ */
+export function InspectorRail({ previewRef, picked, onPick }: {
+  previewRef: React.RefObject<PreviewHandle>;
   picked: string | null;
   onPick: (ref: string | null) => void;
 }): React.ReactElement {
-  const previewRef = useRef<PreviewHandle>(null);
   const [a11y, setA11y] = useState<Array<{ role: string; name: string; testid?: string }>>([]);
   const [typeVal, setTypeVal] = useState('');
   const [status, setStatus] = useState('');
 
   const wv = (): WebviewEl | null => previewRef.current?.getWebview() ?? null;
 
-  // Track the in-flight pick loop so it can't outlive the component (leak on tab switch).
+  // Track the in-flight pick loop so it can't outlive the component.
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stopPickLoop = (): void => {
@@ -33,7 +34,7 @@ export function TestCanvas({ workspaceRoot, selected, device, picked, onPick }: 
 
   const doPick = async (): Promise<void> => {
     const el = wv(); if (!el) return;
-    stopPickLoop(); // cancel any in-flight pick before starting a new one
+    stopPickLoop();
     setStatus('Click an element in the preview…');
     await startPick(el);
     pollRef.current = setInterval(async () => {
@@ -53,29 +54,28 @@ export function TestCanvas({ workspaceRoot, selected, device, picked, onPick }: 
   const doType = async (): Promise<void> => { const el = wv(); if (el && picked) { const r = await typeText(el, picked, typeVal); setStatus(r.ok ? `Typed into ${picked}` : `Type failed: ${r.error ?? ''}`); } };
 
   return (
-    <div className="ds-testwrap">
-      <div className="ds-canvas-bar">
+    <aside className="ds-testinspect" aria-label="Flow inspector">
+      <p className="ds-eyebrow">Drive the flow</p>
+      <div className="ds-inspect-actions">
         <button className="ds-iconbtn" onClick={() => void doPick()}>Pick</button>
         <button className="ds-iconbtn" onClick={() => void doA11y()}>Inspect a11y</button>
         <button className="ds-iconbtn" disabled={!picked} onClick={() => void doTap()}>Tap</button>
-        <input className="ds-select" placeholder="type text…" value={typeVal} onChange={(e) => setTypeVal(e.target.value)} />
+      </div>
+      <div className="ds-inspect-actions">
+        <input className="ds-select" placeholder="type text…" aria-label="Text to type" value={typeVal} onChange={(e) => setTypeVal(e.target.value)} />
         <button className="ds-iconbtn" disabled={!picked} onClick={() => void doType()}>Type</button>
-        <span className="ds-nav-spacer" />
-        <button className="ds-iconbtn" onClick={() => previewRef.current?.reload()}>Reload</button>
       </div>
-      <div className="ds-testsplit">
-        <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={selected} device={device} />
-        <aside className="ds-testinspect">
-          <p className="ds-eyebrow">Selected</p>
-          <p className="ds-mono ds-testpicked" data-mono>{picked ? `[data-testid="${picked}"]` : '— pick an element —'}</p>
-          <p className="ds-eyebrow">Status</p>
-          <p className="ds-mono" data-mono>{status || '—'}</p>
-          <p className="ds-eyebrow">Accessibility tree</p>
-          <ul className="ds-a11y">
-            {a11y.map((n, i) => <li key={i} data-mono>{n.role} · {n.name}{n.testid ? ` · ${n.testid}` : ''}</li>)}
-          </ul>
-        </aside>
-      </div>
-    </div>
+
+      <p className="ds-eyebrow">Selected</p>
+      <p className="ds-testpicked" data-mono>{picked ? `[data-testid="${picked}"]` : '— pick an element —'}</p>
+
+      <p className="ds-eyebrow">Status</p>
+      <p data-mono className="ds-inspect-status">{status || '—'}</p>
+
+      <p className="ds-eyebrow">Accessibility tree</p>
+      {a11y.length === 0
+        ? <p className="ds-inspect-status" data-mono>— run Inspect a11y —</p>
+        : <ul className="ds-a11y">{a11y.map((n, i) => <li key={i} data-mono>{n.role} · {n.name}{n.testid ? ` · ${n.testid}` : ''}</li>)}</ul>}
+    </aside>
   );
 }
