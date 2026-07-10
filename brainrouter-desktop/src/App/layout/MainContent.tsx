@@ -1,11 +1,11 @@
 /**
- * App shell — the `.main` content column: Track-mode board OR the Code/Chat
- * chat thread + composer, plus the Environment column, side ViewsRail, bottom
+ * App shell — the `.main` content column: Design-mode studio, Track-mode board,
+ * OR the Code/Chat thread + composer, plus the Environment column, side ViewsRail, bottom
  * TerminalDock, and the pinned TopbarRight cluster. Extracted from App.tsx
  * verbatim; every value flows through props so the rendered layout, DOM order
  * (load-bearing for Electron drag regions), and behavior are unchanged.
  */
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { Icon } from '../../icons.js';
 import { TrackView } from '../../track/TrackView.js';
 import { ChatThread } from '../../components/chat/ChatThread.js';
@@ -18,6 +18,10 @@ import type { PanelId } from '../../panels/index.js';
 import type { AttachmentUpload, FleetRow } from '../../types.js';
 import type { useCi } from '../../lib/ci/useCi.js';
 
+// Design mode — the Design Studio workbench as a full-bleed workspace surface.
+// Lazy so its webview canvases don't weigh on first paint (same as the panel route).
+const DesignStudioPanel = lazy(() => import('../../panels/DesignStudioPanel.js').then((m) => ({ default: m.DesignStudioPanel })));
+
 type CT = React.ComponentProps<typeof ChatThread>;
 type CP = React.ComponentProps<typeof Composer>;
 type EP = React.ComponentProps<typeof EnvironmentPanel>;
@@ -27,8 +31,8 @@ type TR = React.ComponentProps<typeof TopbarRight>;
 type TV = React.ComponentProps<typeof TrackView>;
 
 export interface MainContentProps {
-  mode: 'chat' | 'track' | 'code';
-  setMode: (m: 'chat' | 'track' | 'code') => void;
+  mode: 'chat' | 'track' | 'code' | 'design';
+  setMode: (m: 'chat' | 'track' | 'code' | 'design') => void;
   workrowRef: React.RefObject<HTMLDivElement>;
   // Track view
   track: { project: TV['project']; items: TV['items']; sprints: TV['sprints']; modules: TV['modules']; views: TV['views']; automations: TV['automations']; members: TV['members']; sync: TV['sync']; git: TV['git']; pr: TV['pr'] };
@@ -190,7 +194,13 @@ export function MainContent(p: MainContentProps): React.ReactElement {
 
   return (
     <div className="main">
-      {mode === 'track' ? (
+      {mode === 'design' ? (
+        <div className="workrow design-workrow" ref={workrowRef}>
+          <Suspense fallback={<div className="row status"><span className="spinner" /> Loading Design Studio…</div>}>
+            <DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} />
+          </Suspense>
+        </div>
+      ) : mode === 'track' ? (
         <div className="workrow track-workrow" ref={workrowRef}>
           <TrackView project={track.project} items={track.items} sprints={track.sprints} modules={track.modules} views={track.views} automations={track.automations} members={track.members} sync={track.sync} git={track.git} pr={track.pr} ops={trackOps} railOpen={railOpen} onOpenRail={() => setRailOpen(true)} />
           {sidePanelOpen && !sidePinned && !sideFullScreen ? (

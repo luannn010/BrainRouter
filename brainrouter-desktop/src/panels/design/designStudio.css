@@ -1,5 +1,9 @@
 /* brainrouter-desktop/src/panels/design/designStudio.css */
 /* Memory Instrument — scoped so the surrounding app chrome is untouched. */
+
+/* Design mode — the Studio as a full-bleed workspace surface, alongside Chat · Code · Track. */
+.workrow.design-workrow > .design-studio { flex:1; min-width:0; }
+
 .design-studio {
   --ds-bg:#0B0D0F; --ds-surface:#14171A; --ds-overlay:#1E2227;
   --ds-border:rgba(255,255,255,0.08); --ds-border-strong:rgba(255,255,255,0.14);
