@@ -9,11 +9,20 @@ import path from 'node:path';
 import { isAuthorizedPrototypePath } from '@kinqs/brainrouter-core/dist/prototype/protoDetect.js';
 
 export type PrototypeEntry = { id: string; path: string; title: string; mtimeMs: number };
+/** A prototype plus its self-contained HTML — what the Canvas renders per frame. */
+export type PrototypeFrame = PrototypeEntry & { content: string };
+
 export interface DesignHost {
   listPrototypes(): { prototypes: PrototypeEntry[] };
   readPrototype(id: string): { path: string; content: string } | { error: string };
+  /** Batch read for the Canvas: one IPC round-trip for every frame it draws. */
+  readPrototypes(opts?: { limit?: number }): { frames: PrototypeFrame[]; truncated: boolean };
   ensureSeed(): { path: string; created: boolean };
 }
+
+/** Canvas guards — never flood the renderer with a huge or unbounded frame set. */
+const MAX_FRAMES = 24;
+const MAX_FRAME_BYTES = 512_000;
 
 function titleFrom(html: string, id: string): string {
   const m = /<title>([^<]+)<\/title>/i.exec(html);
@@ -37,23 +46,37 @@ export function createDesignHost(workspaceRoot: string): DesignHost {
     return abs;
   };
 
+  /** One directory walk, newest-first — the single source both list and batch-read use. */
+  const scan = (): PrototypeFrame[] => {
+    let names: string[] = [];
+    try { names = fs.readdirSync(protoDir); } catch { return []; }
+    const frames: PrototypeFrame[] = [];
+    for (const name of names) {
+      const rel = `proto/${name}`;
+      if (!isAuthorizedPrototypePath(rel)) continue;
+      const abs = path.join(protoDir, name);
+      let content = '';
+      let mtimeMs = 0;
+      try { content = fs.readFileSync(abs, 'utf8'); mtimeMs = fs.statSync(abs).mtimeMs; } catch { continue; }
+      const id = name.replace(/\.html?$/i, '');
+      frames.push({ id, path: rel, title: titleFrom(content, id), mtimeMs, content });
+    }
+    frames.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return frames;
+  };
+
   return {
     listPrototypes() {
-      let names: string[] = [];
-      try { names = fs.readdirSync(protoDir); } catch { return { prototypes: [] }; }
-      const prototypes: PrototypeEntry[] = [];
-      for (const name of names) {
-        const rel = `proto/${name}`;
-        if (!isAuthorizedPrototypePath(rel)) continue;
-        const abs = path.join(protoDir, name);
-        let content = '';
-        let mtimeMs = 0;
-        try { content = fs.readFileSync(abs, 'utf8'); mtimeMs = fs.statSync(abs).mtimeMs; } catch { continue; }
-        const id = name.replace(/\.html?$/i, '');
-        prototypes.push({ id, path: rel, title: titleFrom(content, id), mtimeMs });
-      }
-      prototypes.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      // Drop `content` — the picker only needs metadata.
+      const prototypes = scan().map(({ content: _content, ...entry }) => entry);
       return { prototypes };
+    },
+
+    readPrototypes(opts) {
+      const limit = Math.max(1, Math.min(opts?.limit ?? MAX_FRAMES, MAX_FRAMES));
+      const all = scan();
+      const frames = all.slice(0, limit).filter((f) => f.content.length <= MAX_FRAME_BYTES);
+      return { frames, truncated: all.length > frames.length };
     },
 
     readPrototype(id) {

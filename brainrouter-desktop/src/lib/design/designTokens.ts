@@ -67,3 +67,28 @@ export function radii(): Array<{ token: string; px: number }> {
     { token: '--ds-radius-panel', px: 12 },
   ];
 }
+
+/** 4px base unit — every gap, pad and inset lands on this rhythm. */
+export function spacingScale(): number[] {
+  return [4, 8, 12, 16, 24, 32, 48, 64];
+}
+
+/** Elevation is colour-steps + a NEUTRAL depth shadow — never a coloured glow. */
+export function elevation(): Array<{ name: string; token: string; value: string; use: string }> {
+  return [
+    { name: 'Inset', token: '--ds-elev-inset', value: 'inset 0 1px 0 rgba(255,255,255,0.05)', use: 'Pressable top-highlight' },
+    { name: 'Small', token: '--ds-shadow-sm', value: '0 1px 2px rgba(0,0,0,0.35)', use: 'Resting cards' },
+    { name: 'Medium', token: '--ds-shadow-md', value: '0 6px 16px -6px rgba(0,0,0,0.5)', use: 'Hover / raised' },
+    { name: 'Large', token: '--ds-shadow-lg', value: '0 24px 60px -20px rgba(0,0,0,0.62)', use: 'Popovers, modals' },
+  ];
+}
+
+/** Restrained + physical: transform/opacity only, one signature loop. */
+export function motionSpec(): Array<{ name: string; value: string; use: string }> {
+  return [
+    { name: 'Transition', value: '180ms cubic-bezier(0.2, 0.8, 0.2, 1)', use: 'Hover / state change' },
+    { name: 'Tactile press', value: 'scale(0.98)', use: ':active on buttons and nodes' },
+    { name: 'Stagger', value: 'calc(var(--i) * 40ms)', use: 'List and grid reveal' },
+    { name: 'Breathe', value: 'opacity 0.5 ↔ 1 over 2.4s', use: 'The one signature loop — live status dot' },
+  ];
+}

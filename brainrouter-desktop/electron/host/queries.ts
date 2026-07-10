@@ -3054,6 +3054,12 @@ export function buildQueries(ctx: HostContext): Record<string, QueryHandler> {
         const id = typeof args.id === 'string' ? args.id : '';
         return id ? design.readPrototype(id) : { error: 'missing id' };
       },
+      'design:read-prototypes': (args) => {
+        try {
+          const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : undefined;
+          return design.readPrototypes(limit ? { limit } : undefined);
+        } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
       'design:ensure-seed': () => {
         try { return design.ensureSeed(); }
         catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
