@@ -10,6 +10,7 @@ import { EditorCanvas } from "./EditorCanvas";
 import { buildEditorSVG } from "./buildEditorSVG";
 import { TEMPLATE_FACTORIES } from "./templates";
 import { downloadPNGFromSVG, downloadSVGString } from "../exportUtil";
+import { BRAND_PALETTES, type BrandTone } from "./palettes";
 
 /* ── tiny styled controls ──────────────────────────────────────────────── */
 const mono: CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 600 };
@@ -36,6 +37,7 @@ function Color({ value, onChange }: { value: string; onChange: (v: string) => vo
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <input type="color" value={value?.startsWith("#") ? value : "#34c28e"} onChange={(e) => onChange(e.target.value)} style={{ width: "100%", height: 34, padding: 2, borderRadius: 6, background: "var(--surface-overlay)", border: "1px solid var(--border)", cursor: "pointer" }} />
+      <input aria-label="Hex color" value={value} onChange={(e) => onChange(e.target.value)} style={{ ...fieldBox, fontFamily: "var(--font-mono)", fontSize: 11 }} placeholder="#34C28E" />
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
         {SWATCHES.map((c) => (
           <button key={c} type="button" title={c} onClick={() => onChange(c)} style={{ width: 18, height: 18, borderRadius: 4, background: c, border: value?.toLowerCase() === c.toLowerCase() ? "2px solid var(--accent)" : "1px solid var(--border)", cursor: "pointer", padding: 0 }} />
@@ -43,6 +45,15 @@ function Color({ value, onChange }: { value: string; onChange: (v: string) => vo
       </div>
     </div>
   );
+}
+
+function ToneSuggestions({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [tone, setTone] = useState<BrandTone>("calm");
+  const palette = BRAND_PALETTES[tone];
+  return <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: "9px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-overlay)" }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}><span style={mono}>Tone palette</span><select value={tone} onChange={(e) => setTone(e.target.value as BrandTone)} aria-label="Color tone" style={{ ...fieldBox, width: "auto", padding: "4px 7px", fontSize: 11 }}>{(Object.keys(BRAND_PALETTES) as BrandTone[]).map((key) => <option key={key} value={key}>{BRAND_PALETTES[key].label}</option>)}</select></div>
+    <div style={{ display: "flex", gap: 5 }}>{palette.colors.map((color) => <button key={color} type="button" title={`${palette.label} ${color}`} aria-label={`Use ${color}`} onClick={() => onChange(color)} style={{ width: 25, height: 25, padding: 0, borderRadius: 6, background: color, border: value.toLowerCase() === color.toLowerCase() ? "2px solid var(--accent)" : "1px solid var(--border-med)", cursor: "pointer" }} />)}</div>
+  </div>;
 }
 function Seg<T extends string>({ value, onChange, opts }: { value: T; onChange: (v: T) => void; opts: { v: T; label: string }[] }) {
   return (
@@ -181,6 +192,7 @@ function Inspector({ ed }: { ed: ReturnType<typeof useEditor> }) {
               <Row label="Font"><Seg<"sans" | "mono"> value={t.fontFamily} onChange={(v) => up({ fontFamily: v })} opts={[{ v: "sans", label: "Geist" }, { v: "mono", label: "Mono" }]} /></Row>
               <Row label="Align"><Seg<"left" | "center" | "right"> value={t.align} onChange={(v) => up({ align: v })} opts={[{ v: "left", label: "L" }, { v: "center", label: "C" }, { v: "right", label: "R" }]} /></Row>
               <Row label="Color"><Color value={t.color} onChange={(v) => up({ color: v })} /></Row>
+              <ToneSuggestions value={t.color} onChange={(v) => up({ color: v })} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <Row label={`Tracking ${t.letterSpacing}`}><Range value={t.letterSpacing} min={-8} max={16} onChange={(v) => up({ letterSpacing: v })} /></Row>
                 <Row label={`Line ${t.lineHeight}`}><Range value={t.lineHeight} min={0.9} max={2} step={0.05} onChange={(v) => up({ lineHeight: v })} /></Row>

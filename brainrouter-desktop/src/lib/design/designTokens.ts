@@ -21,6 +21,11 @@ export const MEMORY_INSTRUMENT = {
 } as const;
 
 export type TokenSwatch = { name: string; token: string; value: string; role: string };
+export type BrandTypographyOverride = { family: 'sans' | 'mono'; size: number; weight: number };
+export interface BrandOverrides {
+  typography: Record<string, BrandTypographyOverride>;
+  colors: Record<string, string>;
+}
 
 export function colorTokens(): TokenSwatch[] {
   const M = MEMORY_INSTRUMENT;

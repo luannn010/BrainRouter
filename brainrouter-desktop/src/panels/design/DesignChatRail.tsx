@@ -2,6 +2,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '../../icons.js';
 import { buildUiFixPrompt, type PrototypeEntry } from '../../lib/design/prototypeMeta.js';
+import { bridgeQuery } from '../../lib/bridgeQuery.js';
+import type { BrandOverrides } from '../../lib/design/designTokens.js';
 import type { PreviewHandle, PickInfo } from './PreviewCanvas.js';
 
 type Line = { role: 'you' | 'brainrouter'; text: string };
@@ -41,10 +43,22 @@ export function DesignChatRail({ selected, previewRef, picked, onPick, controls 
   const [lines, setLines] = useState<Line[]>([]);
   const [live, setLive] = useState('');
   const [running, setRunning] = useState(false);
+  const [brandOverrides, setBrandOverrides] = useState<BrandOverrides | null>(null);
   const [picking, setPicking] = useState(false);
   const liveRef = useRef('');
   const runningRef = useRef(false);
   const stopPickRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    bridgeQuery<{ overrides?: Partial<BrandOverrides> }>('design:read-brand-overrides', {})
+      .then((result) => {
+        if (!active || !result.overrides) return;
+        setBrandOverrides({ typography: result.overrides.typography ?? {}, colors: result.overrides.colors ?? {} });
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   // Stream the agent turn — gated on runningRef so this rail reacts only to its
   // OWN fix turn, not every unrelated turn on the shared event bus.
@@ -80,7 +94,7 @@ export function DesignChatRail({ selected, previewRef, picked, onPick, controls 
   const submit = (): void => {
     const instruction = draft.trim();
     if (!instruction || !selected || running) return;
-    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked?.testid ?? null });
+    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked?.testid ?? null, brandOverrides });
     setLines((l) => [...l, { role: 'you', text: instruction }]);
     setDraft(''); runningRef.current = true; setRunning(true); liveRef.current = ''; setLive('');
     // Runs in the ACTIVE session (same model/mode the controls below set). hidden

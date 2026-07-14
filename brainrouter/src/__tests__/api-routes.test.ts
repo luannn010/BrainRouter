@@ -45,20 +45,32 @@ vi.mock("../memory/engine.js", () => ({
     store: {
       deleteContextualFocus: vi.fn(),
     },
+    design: {
+      getDesignArtifact: vi.fn(async () => null),
+      upsertDesignArtifact: vi.fn(async (record: unknown) => ({ ...(record as object), updatedAt: "2026-07-15T00:00:00.000Z" })),
+      deleteDesignArtifact: vi.fn(async () => undefined),
+    },
+    tenancy: {
+      getDefaultOrgId: vi.fn(async () => "org-1"),
+      getMemberRole: vi.fn(async () => "owner"),
+      ensurePersonalOrg: vi.fn(async () => ({ orgId: "org-1" })),
+    },
   },
 }));
 
 async function createServer() {
-  const [{ workingRouter }, { hooksRouter }, { scenesRouter }] = await Promise.all([
+  const [{ workingRouter }, { hooksRouter }, { scenesRouter }, { designRouter }] = await Promise.all([
     import("../api/routes/memory/working.js"),
     import("../api/routes/agent/hooks.js"),
     import("../api/routes/memory/scenes.js"),
+    import("../api/routes/design.js"),
   ]);
   const app = express();
   app.use(express.json());
   app.use("/api/working", workingRouter);
   app.use("/api/hooks", hooksRouter);
   app.use("/api/scenes", scenesRouter);
+  app.use("/api/design", designRouter);
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
@@ -181,5 +193,37 @@ describe("Phase 4 and 5 API routes", () => {
 
     const { memoryEngine } = await import("../memory/engine.js");
     expect(memoryEngine.store.deleteContextualFocus).toHaveBeenCalledWith("user-1", ["scene-123"]);
+  });
+});
+
+describe("Design Studio artifact routes", () => {
+  let server: Awaited<ReturnType<typeof createServer>>["server"];
+  let baseUrl = "";
+
+  beforeEach(async () => {
+    const created = await createServer();
+    server = created.server;
+    baseUrl = created.baseUrl;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it("requires auth and validates artifact keys", async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/design/artifact?flowId=flow&screenId=screen`);
+    expect(unauthenticated.status).toBe(401);
+    const invalid = await fetch(`${baseUrl}/api/design/artifact`, { headers: { Authorization: "Bearer br_admin" } });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("stores, reads, and deletes a screen artifact", async () => {
+    const headers = { "Content-Type": "application/json", Authorization: "Bearer br_admin" };
+    const body = { flowId: "workspace-onboarding", screenId: "welcome", artifact: { variant: "spacious", instruction: "Make it calmer", updatedAt: "2026-07-15T00:00:00.000Z" } };
+    const saved = await fetch(`${baseUrl}/api/design/artifact`, { method: "PUT", headers, body: JSON.stringify(body) });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).artifact.flowId).toBe(body.flowId);
+    const deleted = await fetch(`${baseUrl}/api/design/artifact?flowId=${body.flowId}&screenId=${body.screenId}`, { method: "DELETE", headers });
+    expect(deleted.status).toBe(200);
   });
 });

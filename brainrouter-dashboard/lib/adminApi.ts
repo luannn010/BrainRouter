@@ -194,6 +194,11 @@ export const adminApi = {
     authFetch<{ config: EmailSettings; configured: boolean }>("/api/admin/email", { method: "PUT", body }),
   testEmail: (to?: string) =>
     authFetch<{ delivered: boolean; transport: string; detail?: string }>("/api/admin/email/test", { method: "POST", body: { to } }),
+  generateDesign: (body: { flowName: string; screenName: string; route: string; screenDescription: string; prompt: string; model?: string }) =>
+    authFetch<{ ok: boolean; model: string; output: string }>("/api/design/generate", { method: "POST", body }),
+  getDesignArtifact: (flowId: string, screenId: string) => authFetch<{ artifact: { variant: "default" | "spacious" | "prominent" | "empty"; instruction: string; updatedAt: string } | null }>(`/api/design/artifact?flowId=${encodeURIComponent(flowId)}&screenId=${encodeURIComponent(screenId)}`),
+  saveDesignArtifact: (flowId: string, screenId: string, artifact: { variant: "default" | "spacious" | "prominent" | "empty"; instruction: string; updatedAt: string }) => authFetch<{ artifact: unknown }>("/api/design/artifact", { method: "PUT", body: { flowId, screenId, artifact } }),
+  deleteDesignArtifact: (flowId: string, screenId: string) => authFetch<{ ok: boolean }>(`/api/design/artifact?flowId=${encodeURIComponent(flowId)}&screenId=${encodeURIComponent(screenId)}`, { method: "DELETE" }),
   // Artifact sharing (ADR-014 Phase D).
   listOrgShared: (orgId: string, limit = 50) =>
     authFetch<{ shared: SharedMemory[] }>(`/api/memories/org/${orgId}/shared?limit=${limit}`, { orgId }),

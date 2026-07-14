@@ -3064,6 +3064,22 @@ export function buildQueries(ctx: HostContext): Record<string, QueryHandler> {
         try { return design.ensureSeed(); }
         catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
       },
+      'design:read-canvas-document': () => {
+        try { return design.readCanvasDocument(); }
+        catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
+      'design:write-canvas-document': (args) => {
+        try { return design.writeCanvasDocument(args.document); }
+        catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+      },
+      'design:read-brand-overrides': () => {
+        try { return design.readBrandOverrides(); }
+        catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
+      'design:write-brand-overrides': (args) => {
+        try { return design.writeBrandOverrides(args.overrides); }
+        catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+      },
       // Actions — host-side mutations the Settings dialog / palette trigger.
       // They ride the query channel (free-form names, result routing by id).
       'action:clear': () => { getActiveAgent().clearHistory(); return { ok: true }; },

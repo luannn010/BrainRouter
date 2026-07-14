@@ -126,6 +126,8 @@ import * as projects from "./queries/projectQueries.js";
 import * as adminConsole from "./queries/adminConsoleQueries.js";
 import * as providerCfg from "./queries/providerConfigQueries.js";
 import * as integrationCfg from "./queries/integrationConfigQueries.js";
+import * as designArtifacts from "./queries/designQueries.js";
+import type { DesignArtifactRecord } from "../../../design/store.js";
 import type { TenancyStore } from "../../../tenancy/store.js";
 import type { Role } from "../../../tenancy/rbac.js";
 import type { OrganizationRecord, OrgMemberRecord, OrgMembership, OrgPlan } from "../../../tenancy/types.js";
@@ -413,6 +415,16 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   public listAllOrgsWithStats(limit = 500): Promise<adminConsole.OrgStatsRow[]> { return adminConsole.listAllOrgsWithStats(this.exec, limit); }
   public logOrgAudit(rec: { orgId: string; actorId?: string | null; action: string; target?: string | null; detail?: string | null; createdAt: string }): Promise<void> { return adminConsole.logOrgAudit(this.exec, rec); }
   public listOrgAudit(orgId: string, limit = 100): Promise<adminConsole.OrgAuditRow[]> { return adminConsole.listOrgAudit(this.exec, orgId, limit); }
+
+  public getDesignArtifact(userId: string, flowId: string, screenId: string): Promise<DesignArtifactRecord | null> {
+    return designArtifacts.getDesignArtifact(this.exec, userId, flowId, screenId);
+  }
+  public upsertDesignArtifact(record: DesignArtifactRecord): Promise<DesignArtifactRecord> {
+    return designArtifacts.upsertDesignArtifact(this.exec, record);
+  }
+  public deleteDesignArtifact(userId: string, flowId: string, screenId: string): Promise<void> {
+    return designArtifacts.deleteDesignArtifact(this.exec, userId, flowId, screenId);
+  }
 
   // ── tenancy (ADR-010 P1: organizations + membership/roles) ───────────────
 

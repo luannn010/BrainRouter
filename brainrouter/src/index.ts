@@ -60,6 +60,7 @@ import {
   workingRouter,
 } from './api/routes/memory/index.js';
 import { brainRouter, fleetRouter, hooksRouter, governanceRouter } from './api/routes/agent/index.js';
+import { designRouter } from './api/routes/design.js';
 import { USING_FALLBACK_JWT_SECRET, IS_PRODUCTION, jwtSecretBootError } from './api/middleware/auth.js';
 import { securityHeaders, corsMiddleware, resolveCorsAllowlist } from './api/middleware/securityHeaders.js';
 import { resolveJsonBodyLimit, payloadTooLargeHandler } from './api/bodyLimit.js';
@@ -220,6 +221,7 @@ if (USE_HTTP) {
   app.use("/api/admin/agent-models", agentModelsRouter);
   app.use("/api/admin/integrations", integrationsRouter);
   app.use("/api/admin/email", adminEmailRouter);
+  app.use("/api/design", designRouter);
   app.use("/api/admin/orgs", adminOrgsRouter);
   // Hosted webhook ingress — unauthenticated by JWT (verifies the App's HMAC).
   app.use("/api/triggers", triggersRouter);

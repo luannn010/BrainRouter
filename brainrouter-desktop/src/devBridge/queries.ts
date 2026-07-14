@@ -79,6 +79,8 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
       const p = DEV_PROTOTYPES.find((x) => x.path === key || x.id === key);
       return p ? { path: p.path, title: p.title, content: p.content } : { error: `prototype not found: ${key}` };
     },
+    'design:read-canvas-document': () => ({ document: undefined }),
+    'design:write-canvas-document': () => ({ ok: true }),
     'runtime-runner-info': () => ({ mode: 'in-process', remoteUrl: null }),
     'runtime-runner-status': (a) => ({ runtimeId: String(a.runtimeId ?? ''), status: 'unknown', live: false }),
     'runtime-previews-list': () => ({

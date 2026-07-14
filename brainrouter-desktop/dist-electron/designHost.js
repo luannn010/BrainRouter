@@ -20,6 +20,30 @@ function titleFrom(html, id) {
 const SEED_ID = 'prototype-welcome';
 export function createDesignHost(workspaceRoot) {
     const protoDir = path.join(workspaceRoot, 'proto');
+    const canvasStateDir = path.join(workspaceRoot, '.brainrouter', 'design');
+    const canvasStatePath = path.join(canvasStateDir, 'canvas.json');
+    const brandStatePath = path.join(canvasStateDir, 'brand.json');
+    const insideWorkspace = (candidate) => {
+        const relative = path.relative(workspaceRoot, path.resolve(candidate));
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    const writeAtomic = (filePath, content) => {
+        if (!insideWorkspace(filePath))
+            throw new Error('canvas state path escaped workspace');
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+        try {
+            fs.writeFileSync(temporary, content, 'utf8');
+            fs.renameSync(temporary, filePath);
+        }
+        finally {
+            try {
+                if (fs.existsSync(temporary))
+                    fs.unlinkSync(temporary);
+            }
+            catch { /* best effort */ }
+        }
+    };
     const resolveAuthorized = (id) => {
         const rel = `proto/${id}.html`;
         if (!isAuthorizedPrototypePath(rel))
@@ -83,6 +107,48 @@ export function createDesignHost(workspaceRoot) {
             }
             catch (err) {
                 return { error: err instanceof Error ? err.message : String(err) };
+            }
+        },
+        readCanvasDocument() {
+            if (!insideWorkspace(canvasStatePath))
+                return { error: 'canvas state path escaped workspace' };
+            try {
+                if (!fs.existsSync(canvasStatePath))
+                    return {};
+                return { document: JSON.parse(fs.readFileSync(canvasStatePath, 'utf8')) };
+            }
+            catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+            }
+        },
+        writeCanvasDocument(document) {
+            try {
+                writeAtomic(canvasStatePath, `${JSON.stringify(document, null, 2)}\n`);
+                return { ok: true };
+            }
+            catch (err) {
+                return { ok: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        },
+        readBrandOverrides() {
+            if (!insideWorkspace(brandStatePath))
+                return { error: 'brand state path escaped workspace' };
+            try {
+                if (!fs.existsSync(brandStatePath))
+                    return {};
+                return { overrides: JSON.parse(fs.readFileSync(brandStatePath, 'utf8')) };
+            }
+            catch (err) {
+                return { error: err instanceof Error ? err.message : String(err) };
+            }
+        },
+        writeBrandOverrides(overrides) {
+            try {
+                writeAtomic(brandStatePath, `${JSON.stringify(overrides, null, 2)}\n`);
+                return { ok: true };
+            }
+            catch (err) {
+                return { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
         },
         ensureSeed() {

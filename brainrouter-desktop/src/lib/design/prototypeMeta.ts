@@ -1,6 +1,7 @@
 // brainrouter-desktop/src/lib/design/prototypeMeta.ts
 import { buildDesignSteering } from '@kinqs/brainrouter-core/dist/prototype/prototypePrompt.js';
 import { BRAINROUTER_SIGNATURE } from './signature.js';
+import type { BrandOverrides } from './designTokens.js';
 
 export type PrototypeEntry = { id: string; path: string; title: string; mtimeMs: number };
 
@@ -34,14 +35,16 @@ export function fileUrlFor(workspaceRoot: string, relPath: string): string {
  * place, keeps it self-contained + on the BrainRouter Memory Instrument brand,
  * and — when the user picked an element in the Test canvas — targets it.
  */
-export function buildUiFixPrompt(input: { relPath: string; instruction: string; pickedRef?: string | null }): string {
+export function buildUiFixPrompt(input: { relPath: string; instruction: string; pickedRef?: string | null; brandOverrides?: BrandOverrides | null }): string {
   const steer = buildDesignSteering(BRAINROUTER_SIGNATURE);
   const picked = input.pickedRef ? `\nThe selected element is \`[data-testid="${input.pickedRef}"]\` — scope the change to it unless the instruction says otherwise.` : '';
+  const brand = input.brandOverrides ? `\nCurrent workspace brand overrides (honor these when relevant):\n${JSON.stringify(input.brandOverrides)}` : '';
   return [
     `Edit the existing prototype file \`${input.relPath}\` in place to satisfy this UI change:`,
     ``,
     `> ${input.instruction}`,
     picked,
+    brand,
     ``,
     `Rules:`,
     `- Keep the file a SINGLE self-contained HTML document (inline CSS/JS, no external URLs).`,

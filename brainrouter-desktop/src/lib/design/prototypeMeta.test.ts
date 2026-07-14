@@ -42,3 +42,14 @@ test('buildUiFixPrompt omits the picked-element line when none is provided', () 
   const p = buildUiFixPrompt({ relPath: 'proto/x.html', instruction: 'tighten spacing' });
   assert.doesNotMatch(p, /selected element/i);
 });
+
+test('buildUiFixPrompt carries the saved workspace brand context into the edit', () => {
+  const p = buildUiFixPrompt({
+    relPath: 'proto/x.html',
+    instruction: 'use the workspace typography',
+    brandOverrides: { typography: { Body: { family: 'mono', size: 15, weight: 500 } }, colors: { '--ds-accent': '#4DA3FF' } },
+  });
+  assert.match(p, /workspace brand overrides/);
+  assert.match(p, /#4DA3FF/);
+  assert.match(p, /"family":"mono"/);
+});

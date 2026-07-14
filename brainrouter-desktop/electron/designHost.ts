@@ -17,6 +17,10 @@ export interface DesignHost {
   readPrototype(id: string): { path: string; content: string } | { error: string };
   /** Batch read for the Canvas: one IPC round-trip for every frame it draws. */
   readPrototypes(opts?: { limit?: number }): { frames: PrototypeFrame[]; truncated: boolean };
+  readCanvasDocument(): { document?: unknown; error?: string };
+  writeCanvasDocument(document: unknown): { ok: true } | { ok: false; error: string };
+  readBrandOverrides(): { overrides?: unknown; error?: string };
+  writeBrandOverrides(overrides: unknown): { ok: true } | { ok: false; error: string };
   ensureSeed(): { path: string; created: boolean };
 }
 
@@ -35,6 +39,26 @@ const SEED_ID = 'prototype-welcome';
 
 export function createDesignHost(workspaceRoot: string): DesignHost {
   const protoDir = path.join(workspaceRoot, 'proto');
+  const canvasStateDir = path.join(workspaceRoot, '.brainrouter', 'design');
+  const canvasStatePath = path.join(canvasStateDir, 'canvas.json');
+  const brandStatePath = path.join(canvasStateDir, 'brand.json');
+
+  const insideWorkspace = (candidate: string): boolean => {
+    const relative = path.relative(workspaceRoot, path.resolve(candidate));
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+
+  const writeAtomic = (filePath: string, content: string): void => {
+    if (!insideWorkspace(filePath)) throw new Error('canvas state path escaped workspace');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, content, 'utf8');
+      fs.renameSync(temporary, filePath);
+    } finally {
+      try { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } catch { /* best effort */ }
+    }
+  };
 
   const resolveAuthorized = (id: string): string | null => {
     const rel = `proto/${id}.html`;
@@ -84,6 +108,36 @@ export function createDesignHost(workspaceRoot: string): DesignHost {
       if (!abs) return { error: 'not an authorized prototype path' };
       try { return { path: `proto/${id}.html`, content: fs.readFileSync(abs, 'utf8') }; }
       catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    readCanvasDocument() {
+      if (!insideWorkspace(canvasStatePath)) return { error: 'canvas state path escaped workspace' };
+      try {
+        if (!fs.existsSync(canvasStatePath)) return {};
+        return { document: JSON.parse(fs.readFileSync(canvasStatePath, 'utf8')) as unknown };
+      } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    writeCanvasDocument(document) {
+      try {
+        writeAtomic(canvasStatePath, `${JSON.stringify(document, null, 2)}\n`);
+        return { ok: true };
+      } catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    readBrandOverrides() {
+      if (!insideWorkspace(brandStatePath)) return { error: 'brand state path escaped workspace' };
+      try {
+        if (!fs.existsSync(brandStatePath)) return {};
+        return { overrides: JSON.parse(fs.readFileSync(brandStatePath, 'utf8')) as unknown };
+      } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+    },
+
+    writeBrandOverrides(overrides) {
+      try {
+        writeAtomic(brandStatePath, `${JSON.stringify(overrides, null, 2)}\n`);
+        return { ok: true };
+      } catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
     },
 
     ensureSeed() {

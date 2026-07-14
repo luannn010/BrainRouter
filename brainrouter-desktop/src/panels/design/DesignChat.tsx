@@ -2,6 +2,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { buildUiFixPrompt } from '../../lib/design/prototypeMeta.js';
 import type { PrototypeEntry } from '../../lib/design/prototypeMeta.js';
+import { bridgeQuery } from '../../lib/bridgeQuery.js';
+import type { BrandOverrides } from '../../lib/design/designTokens.js';
 
 type Line = { role: 'you' | 'brainrouter'; text: string };
 
@@ -14,8 +16,20 @@ export function DesignChat({ selected, picked, onApplied }: {
   const [lines, setLines] = useState<Line[]>([]);
   const [live, setLive] = useState('');
   const [running, setRunning] = useState(false);
+  const [brandOverrides, setBrandOverrides] = useState<BrandOverrides | null>(null);
   const liveRef = useRef('');
   const runningRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    bridgeQuery<{ overrides?: Partial<BrandOverrides> }>('design:read-brand-overrides', {})
+      .then((result) => {
+        if (!active || !result.overrides) return;
+        setBrandOverrides({ typography: result.overrides.typography ?? {}, colors: result.overrides.colors ?? {} });
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   // Subscribe to the agent stream. Gate on runningRef so the dock reacts ONLY to
   // its OWN in-flight fix turn — the main chat shares this same onEvent bus, so
@@ -41,7 +55,7 @@ export function DesignChat({ selected, picked, onApplied }: {
   const submit = (): void => {
     const instruction = draft.trim();
     if (!instruction || !selected || running) return;
-    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked });
+    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked, brandOverrides });
     setLines((l) => [...l, { role: 'you', text: instruction }]);
     setDraft(''); runningRef.current = true; setRunning(true); liveRef.current = ''; setLive('');
     // hidden:true hides the (verbose) fix PROMPT from the transcript. NOTE: the turn

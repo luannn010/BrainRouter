@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createDesignHost } from './designHost.js';
@@ -76,5 +76,40 @@ test('readPrototypes drops oversized frames rather than flooding the renderer', 
     const { frames } = createDesignHost(dir).readPrototypes();
     assert.equal(frames.length, 1);
     assert.equal(frames[0].title, 'Small');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('canvas document persistence is workspace-scoped and atomic', () => {
+  const dir = ws();
+  try {
+    const host = createDesignHost(dir);
+    assert.deepEqual(host.readCanvasDocument(), {});
+    const document = { version: 1, nodes: [{ id: 'prototype:a', position: { x: 12, y: 18 } }] };
+    assert.deepEqual(host.writeCanvasDocument(document), { ok: true });
+    assert.deepEqual(host.readCanvasDocument(), { document });
+    assert.equal(readFileSync(path.join(dir, '.brainrouter', 'design', 'canvas.json'), 'utf8').endsWith('\n'), true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('canvas document persistence reports malformed JSON without throwing', () => {
+  const dir = ws();
+  try {
+    const state = path.join(dir, '.brainrouter', 'design');
+    mkdirSync(state, { recursive: true });
+    writeFileSync(path.join(state, 'canvas.json'), '{bad', 'utf8');
+    const result = createDesignHost(dir).readCanvasDocument();
+    assert.equal('error' in result, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('brand overrides persist in the workspace design state', () => {
+  const dir = ws();
+  try {
+    const host = createDesignHost(dir);
+    assert.deepEqual(host.readBrandOverrides(), {});
+    const overrides = { typography: { Body: { family: 'sans', size: 15, weight: 400 } }, colors: { '--ds-accent': '#4DA3FF' } };
+    assert.deepEqual(host.writeBrandOverrides(overrides), { ok: true });
+    assert.deepEqual(host.readBrandOverrides(), { overrides });
+    assert.equal(readFileSync(path.join(dir, '.brainrouter', 'design', 'brand.json'), 'utf8').endsWith('\n'), true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
