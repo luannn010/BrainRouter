@@ -3,6 +3,7 @@
 // destructured helpers below and S.<scalar> for reassignable scalars. Behavior-identical.
 import type { ConnectorRecord } from '@kinqs/brainrouter-types';
 import { devAtlasEnriched, devAtlasGraph } from './atlas.js';
+import { DEV_PROTOTYPES } from './designSeed.js';
 import type { DevState } from './state.js';
 
 // Record shapes reused by a few handlers, derived from the live state so the
@@ -68,6 +69,16 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
   };
   const queries: Record<string, (args: Record<string, unknown>) => unknown> = {
     'list-sessions': () => mergeMeta(S.wsCurrent),
+    // Design Studio — the browser preview has no file system, so serve the
+    // sample prototype flow in-memory (the real host reads proto/*.html).
+    'design:ensure-seed': () => ({ path: DEV_PROTOTYPES[0].path, created: false }),
+    'design:list-prototypes': () => ({ prototypes: DEV_PROTOTYPES.map((p) => ({ id: p.id, path: p.path, title: p.title, mtimeMs: p.mtimeMs })) }),
+    'design:read-prototypes': () => ({ frames: DEV_PROTOTYPES, truncated: false }),
+    'design:read-prototype': (a) => {
+      const key = String(a.path ?? a.id ?? '');
+      const p = DEV_PROTOTYPES.find((x) => x.path === key || x.id === key);
+      return p ? { path: p.path, title: p.title, content: p.content } : { error: `prototype not found: ${key}` };
+    },
     'runtime-runner-info': () => ({ mode: 'in-process', remoteUrl: null }),
     'runtime-runner-status': (a) => ({ runtimeId: String(a.runtimeId ?? ''), status: 'unknown', live: false }),
     'runtime-previews-list': () => ({

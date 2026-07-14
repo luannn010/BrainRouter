@@ -197,7 +197,8 @@ export function MainContent(p: MainContentProps): React.ReactElement {
       {mode === 'design' ? (
         <div className="workrow design-workrow" ref={workrowRef}>
           <Suspense fallback={<div className="row status"><span className="spinner" /> Loading Design Studio…</div>}>
-            <DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} />
+            <DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} railOpen={railOpen} onOpenRail={() => setRailOpen(true)}
+              chat={{ q, modelChoices, currentModel: info.model, modeLabel, effort }} />
           </Suspense>
           {/* The studio keeps the side tool rail — Atlas, Files, Artifacts, Review
               all stay reachable beside the canvas. */}

@@ -5,28 +5,40 @@
 .workrow.design-workrow > .design-studio { flex:1; min-width:0; }
 
 .design-studio {
-  --ds-bg:#0B0D0F; --ds-surface:#14171A; --ds-overlay:#1E2227;
-  --ds-border:rgba(255,255,255,0.08); --ds-border-strong:rgba(255,255,255,0.14);
-  --ds-text:#ECEFF2; --ds-text-2:#9BA3AC; --ds-text-3:#5E6670;
-  --ds-accent:#34C28E; --ds-accent-press:#28A87C; --ds-accent-wash:rgba(52,194,142,0.14);
+  /* Match the app's shared theme (theme.css): the Studio inherits the app's
+     colours + fonts and follows its dark / high-contrast switch, instead of a
+     bespoke green/Geist palette. Only the memory heat-ramp stays custom — the
+     app has no equivalent 4-stop scale. */
+  --ds-bg:var(--bg); --ds-surface:var(--surface); --ds-overlay:var(--raised);
+  --ds-border:var(--border); --ds-border-strong:var(--border-strong);
+  --ds-text:var(--text); --ds-text-2:var(--text-dim); --ds-text-3:var(--text-faint);
+  --ds-accent:var(--accent); --ds-accent-press:color-mix(in srgb, var(--accent) 84%, #000); --ds-accent-wash:var(--accent-soft);
   --ds-heat-hot:#E0A063; --ds-heat-warm:#C98F6E; --ds-heat-cool:#6B7480; --ds-heat-cold:#3C434B;
-  --ds-danger:#E5675F; --ds-warn:#D9A441;
-  --ds-font:"Geist",ui-sans-serif,system-ui,sans-serif;
-  --ds-mono:"Geist Mono",ui-monospace,"SF Mono",Consolas,monospace;
+  --ds-danger:var(--err); --ds-warn:var(--warn);
+  --ds-font:var(--font);
+  --ds-mono:var(--mono);
   --ds-radius-chip:4px; --ds-radius-control:6px; --ds-radius-card:10px; --ds-radius-panel:12px;
-  --ds-elev-inset:inset 0 1px 0 rgba(255,255,255,0.05);
+  --ds-elev-inset:inset 0 1px 0 var(--ov-05);
   --ds-shadow-sm:0 1px 2px rgba(0,0,0,0.35),0 1px 1px rgba(0,0,0,0.22);
   display:flex; flex-direction:column; height:100%;
   background:var(--ds-bg); color:var(--ds-text);
   font-family:var(--ds-font); font-size:14px; line-height:1.5;
 }
 .design-studio *[data-mono], .design-studio .ds-mono { font-family:var(--ds-mono); }
-.design-studio .ds-nav { display:flex; gap:2px; padding:8px; border-bottom:1px solid var(--ds-border); background:var(--ds-surface); align-items:center; }
+/* Three grid columns — 1fr │ auto │ 1fr — keep the section tabs dead-centred
+   regardless of the left cluster's width, and leave the right column empty so
+   the app's floating top-right cluster (settings · export · side-panel) never
+   sits over a control. */
+.design-studio .ds-nav { display:grid; grid-template-columns:1fr auto 1fr; gap:2px; padding:8px; border-bottom:1px solid var(--ds-border); background:var(--ds-surface); align-items:center; }
+.design-studio .ds-nav-left { display:flex; align-items:center; gap:8px; min-width:0; }
 .design-studio .ds-seg { background:transparent; color:var(--ds-text-2); border:0; padding:6px 12px; border-radius:var(--ds-radius-control); font:inherit; cursor:pointer; }
 .design-studio .ds-seg[aria-selected="true"] { background:var(--ds-accent-wash); color:var(--ds-text); box-shadow:inset 0 0 0 1px var(--ds-border-strong); }
-.design-studio .ds-nav-spacer { flex:1; }
 .design-studio .ds-chat-toggle { background:transparent; color:var(--ds-text-2); border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); padding:6px 10px; font:inherit; cursor:pointer; }
-.design-studio .ds-chat-toggle[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); }
+.design-studio .ds-chat-toggle:hover { color:var(--ds-text); border-color:var(--ds-accent); }
+.design-studio .ds-chat-toggle[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); background:var(--ds-accent-wash); }
+.design-studio .ds-chat-toggle:focus-visible { outline:2px solid var(--ds-accent); outline-offset:2px; }
+/* Icon-only variant of the fix-chat toggle — square, glyph centred. */
+.design-studio .ds-chat-toggle--icon { display:inline-flex; align-items:center; justify-content:center; padding:6px; line-height:0; }
 .design-studio .ds-body { flex:1; min-height:0; display:flex; }
 /* The view owns no scroll — each section decides (Brands scrolls, Canvas pans). */
 .design-studio .ds-view { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
@@ -60,7 +72,7 @@
 .design-studio .ds-type-row { color:var(--ds-text); }
 .design-studio .ds-specimens { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
 .design-studio .ds-btn { border:0; border-radius:var(--ds-radius-control); padding:8px 14px; font:inherit; font-weight:500; cursor:pointer; box-shadow:var(--ds-elev-inset); }
-.design-studio .ds-btn--accent { background:var(--ds-accent); color:#06140E; }
+.design-studio .ds-btn--accent { background:var(--ds-accent); color:#fff; }
 .design-studio .ds-btn--accent:active { transform:scale(.98); background:var(--ds-accent-press); }
 .design-studio .ds-btn--ghost { background:transparent; color:var(--ds-text); box-shadow:inset 0 0 0 1px var(--ds-border-strong); }
 .design-studio .ds-status { display:inline-flex; align-items:center; gap:6px; color:var(--ds-text-2); font-family:var(--ds-mono); font-size:12px; }
@@ -76,7 +88,7 @@
 .design-studio .ds-iconbtn { background:transparent; color:var(--ds-text-2); border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); padding:6px 10px; font:inherit; cursor:pointer; }
 .design-studio .ds-iconbtn[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); }
 .design-studio .ds-preview { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:stretch; padding:12px; }
-.design-studio .ds-stage { width:100%; height:100%; background:#0B0D0F; border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
+.design-studio .ds-stage { width:100%; height:100%; background:var(--ds-bg); border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
 
 /* --- Flow inspector rail --- */
 .design-studio .ds-testinspect { width:260px; flex:none; border-left:1px solid var(--ds-border); padding:12px; overflow:auto; display:flex; flex-direction:column; gap:8px; }
@@ -95,6 +107,15 @@
 .design-studio .ds-chat-form { border-top:1px solid var(--ds-border); padding:10px; display:flex; gap:8px; align-items:flex-end; }
 .design-studio .ds-chat-input { flex:1; resize:none; background:var(--ds-bg); color:var(--ds-text); border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); padding:8px; font:inherit; }
 .design-studio .ds-chat-input:focus { outline:none; border-color:var(--ds-accent); box-shadow:0 0 0 2px var(--ds-accent-wash); }
+
+/* --- Designs Fix-chat rail (replaces the old flow inspector) --- */
+.design-studio .ds-chatrail { width:320px; flex:none; border-left:1px solid var(--ds-border); background:var(--ds-surface); display:flex; flex-direction:column; min-height:0; }
+.design-studio .ds-chatrail-head { padding:10px 12px; border-bottom:1px solid var(--ds-border); display:flex; flex-direction:column; gap:2px; }
+.design-studio .ds-chat-controls { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px; border-bottom:1px solid var(--ds-border); align-items:center; }
+.design-studio .ds-chat-controls .ds-select { flex:1; min-width:70px; }
+.design-studio .ds-iconbtn.is-armed { color:var(--ds-accent); border-color:var(--ds-accent); background:var(--ds-accent-wash); }
+.design-studio .ds-pick-chip { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ds-accent); background:var(--ds-accent-wash); border:1px solid var(--ds-accent); border-radius:var(--ds-radius-chip); padding:3px 4px 3px 7px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.design-studio .ds-pick-clear { background:transparent; border:0; color:inherit; cursor:pointer; display:inline-flex; align-items:center; padding:0; }
 
 /* ── Nav: three centered section tabs ─────────────────────────────────────── */
 .design-studio .ds-nav-brand { flex:none; }

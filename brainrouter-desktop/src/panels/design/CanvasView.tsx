@@ -205,7 +205,7 @@ export function CanvasView({ onOpenInDesigns }: { onOpenInDesigns: (id: string) 
         {loading && frames.length === 0 && <div className="ds-empty">Loading prototypes…</div>}
         {error && <div className="ds-empty ds-error">{error}</div>}
         {!loading && !error && frames.length === 0 && (
-          <div className="ds-empty">No prototypes yet. Generate one from the Fix chat, then Refresh.</div>
+          <div className="ds-empty">No flows yet. Generate one from the Fix chat, then Refresh.</div>
         )}
 
         <div className="ds-world" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>

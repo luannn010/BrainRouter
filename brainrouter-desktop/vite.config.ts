@@ -1,5 +1,62 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { DEV_PROTOTYPES } from './src/devBridge/designSeed.js';
+
+/**
+ * Dev-only prototype server. The Designs preview normally loads a prototype in an
+ * Electron <webview> (file://); the browser preview has no webview, so it falls
+ * back to an <iframe>. A srcdoc iframe inherits the app's strict `script-src
+ * 'self'` CSP and can't run a flow's inline nav script — but a same-origin SERVED
+ * document does not inherit it, so its own `default-src 'none'; script-src
+ * 'unsafe-inline'` meta governs: the flow is interactive, network still sealed.
+ * Serve-only: the packaged app never uses this.
+ */
+// Claude-style element picker, injected into every served flow. Idle until the
+// parent posts {__brpPick:'on'}: then hovering draws a green highlight + a
+// `tag WxH · testid` label, a click posts {__brpPicked:{…}} back and turns off,
+// Esc cancels. Capture-phase + `on` gate so it never interferes with the flow's
+// own navigation when idle. Inline-script-safe (served doc allows unsafe-inline).
+const PICKER = `
+<style id="__brp-pick-style">
+#__brp-hl{position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #34C28E;background:rgba(52,194,142,.14);border-radius:4px;box-shadow:0 0 0 1px rgba(52,194,142,.4);display:none}
+#__brp-tip{position:fixed;pointer-events:none;z-index:2147483647;background:#0B0D0F;color:#ECEFF2;border:1px solid rgba(255,255,255,.16);border-radius:6px;padding:4px 8px;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;display:none;white-space:nowrap;box-shadow:0 6px 20px rgba(0,0,0,.55)}
+#__brp-tip b{color:#7C8BFF;font-weight:600}#__brp-tip i{color:#34C28E;font-style:normal}
+body.__brp-picking,body.__brp-picking *{cursor:crosshair !important}
+</style>
+<script id="__brp-pick">(function(){
+var hl,tip,on=false;
+function tid(el){while(el&&el.nodeType===1&&el!==document.body){var t=el.getAttribute&&el.getAttribute('data-testid');if(t)return t;el=el.parentElement;}return null;}
+function ensure(){if(hl)return;hl=document.createElement('div');hl.id='__brp-hl';tip=document.createElement('div');tip.id='__brp-tip';document.documentElement.appendChild(hl);document.documentElement.appendChild(tip);}
+function move(e){if(!on)return;var el=e.target;if(!el||el===hl||el===tip||el.nodeType!==1)return;var r=el.getBoundingClientRect();hl.style.display='block';hl.style.left=r.left+'px';hl.style.top=r.top+'px';hl.style.width=r.width+'px';hl.style.height=r.height+'px';var tag=(el.tagName||'node').toLowerCase();var t=tid(el);tip.style.display='block';tip.innerHTML='<b>'+tag+'</b> '+Math.round(r.width)+'\\u00d7'+Math.round(r.height)+(t?' \\u00b7 <i>'+t+'</i>':'');var top=r.top-26;tip.style.left=Math.max(4,r.left)+'px';tip.style.top=(top<4?r.bottom+6:top)+'px';}
+function pick(e){if(!on)return;e.preventDefault();e.stopPropagation();var el=e.target;var tag=(el.tagName||'node').toLowerCase();var t=tid(el);var r=el.getBoundingClientRect();parent.postMessage({__brpPicked:{testid:t,tag:tag,label:t?'[data-testid="'+t+'"]':tag,w:Math.round(r.width),h:Math.round(r.height)}},'*');off();}
+function key(e){if(on&&e.key==='Escape'){off();parent.postMessage({__brpPicked:null},'*');}}
+function enable(){ensure();on=true;if(document.body)document.body.classList.add('__brp-picking');}
+function off(){on=false;if(hl)hl.style.display='none';if(tip)tip.style.display='none';if(document.body)document.body.classList.remove('__brp-picking');}
+document.addEventListener('mousemove',move,true);
+document.addEventListener('click',pick,true);
+document.addEventListener('keydown',key,true);
+window.addEventListener('message',function(e){var d=e.data||{};if(d.__brpPick==='on')enable();else if(d.__brpPick==='off')off();});
+})();</script>`;
+
+function prototypeProxy(): Plugin {
+  return {
+    name: 'brp-prototype-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/__brp/proto', (req, res) => {
+        const q = (req.originalUrl ?? req.url ?? '').split('?')[1] ?? '';
+        const id = new URLSearchParams(q).get('id') ?? '';
+        const proto = DEV_PROTOTYPES.find((p) => p.id === id || p.path === id);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.statusCode = proto ? 200 : 404;
+        const body = proto
+          ? (proto.content.includes('</body>') ? proto.content.replace('</body>', `${PICKER}</body>`) : proto.content + PICKER)
+          : '<!doctype html><meta charset="utf-8"><title>Flow not found</title>';
+        res.end(body);
+      });
+    },
+  };
+}
 
 /**
  * Dev-only model-probe proxy. The browser preview can't fetch a provider's
@@ -53,9 +110,12 @@ function modelProbeProxy(): Plugin {
 
 // Renderer build — plain SPA served from dist/ inside the packaged app.
 export default defineConfig({
-  plugins: [react(), modelProbeProxy()],
+  plugins: [react(), modelProbeProxy(), prototypeProxy()],
   base: './',
   build: { outDir: 'dist' },
+  // Honour the port the preview harness assigns via PORT (Vite ignores it by
+  // default); fall back to Vite's usual 5173 for a plain `npm run dev`.
+  server: { port: Number(process.env.PORT) || 5173 },
   // Monaco ships its language services as web workers. Emit them as same-origin
   // ES-module chunks (via the `?worker` imports in src/lib/editor/monacoEnv.ts)
   // so they load under the packaged file:// CSP — never the blocked blob/CDN worker.
