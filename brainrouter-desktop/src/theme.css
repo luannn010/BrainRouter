@@ -100,7 +100,7 @@ button:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 1p
 .center { --content-w: min(var(--chat-w, 840px), calc(100% - clamp(48px, 8vw, 96px))); flex: 1 1 0; min-width: 280px; display: flex; flex-direction: column; min-height: 0; background: var(--bg); container-type: inline-size; container-name: center; }
 
 /* ---------- left rail ---------- */
-.rail { position: relative; width: 268px; flex: none; background: var(--sidebar); padding: 10px 10px 12px; display: flex; flex-direction: column; min-height: 0; -webkit-app-region: drag; border-right: 1px solid var(--ov-06); animation: railIn .18s ease-out; }
+.rail { position: relative; width: 300px; flex: none; background: var(--sidebar); padding: 10px 10px 12px; display: flex; flex-direction: column; min-height: 0; -webkit-app-region: drag; border-right: 1px solid var(--ov-06); animation: railIn .18s ease-out; }
 /* DESK-5i — drag-resize on the sidebar's right edge (mirrors the side panel's grip) */
 .rail-grip { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 40; -webkit-app-region: no-drag; }
 .rail-grip:hover, .rail-grip:active { background: var(--accent-soft); box-shadow: inset -2px 0 0 var(--accent); }

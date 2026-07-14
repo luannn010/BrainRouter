@@ -92,8 +92,10 @@ export function App(): React.ReactElement {
     const saved = localStorage.getItem('br-rail-open');
     return saved !== null ? saved === '1' : true;
   });
-  // DESK-5i — the left sidebar starts at its minimum size (220) on launch.
-  const [railWidth, setRailWidth] = useState(220);
+  // The left sidebar launches wide enough for the Chat · Code · Track · Design
+  // mode tabs to read in full (below ~300 they clip to "C… C… Tr… D…").
+  // Still drag-resizable down to its 220 minimum.
+  const [railWidth, setRailWidth] = useState(300);
 
   // DESK-5f — ONE tabbed side panel (Codex model): views are tabs you switch
   // between, never extra window columns. Empty tab list = the view chooser.
