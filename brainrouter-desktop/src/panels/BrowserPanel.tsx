@@ -26,7 +26,7 @@ import {
   highlightEl,
   clearHighlight,
 } from '../lib/uitest/webviewBridge.js';
-import type { UiMap } from '@kinqs/brainrouter-ui-test/dist/types.js';
+import type { UiMap } from '@kinqs/brainrouter-core/uitest';
 import { rowSource, symbolKindIcon } from '../lib/uitest/rowSource.js';
 
 type Drawer = 'elements' | 'console' | 'network' | 'a11y' | 'shot' | 'flows' | null;
@@ -50,6 +50,31 @@ function loadFlows(): Record<string, FlowStep[]> {
 function saveFlows(f: Record<string, FlowStep[]>): void {
   try { localStorage.setItem(FLOWS_KEY, JSON.stringify(f)); } catch { /* ignore */ }
 }
+
+/**
+ * The one choke-point every omnibox entry passes through — a real browser
+ * address bar. Resolves, in order: an explicit http(s) URL (any origin); a
+ * data:text/html document; a bare loopback host → http; a hostname-looking token
+ * → https; and anything else (words, a query) → a web search. Never returns an
+ * empty/scheme-less string (Electron throws ERR_INVALID_URL for '') and never a
+ * dangerous scheme (javascript:/file: fall through to search). null only for
+ * empty input, where the caller uses the BROWSER_BLANK fallback.
+ */
+function normalizeUrl(raw: string | null | undefined): string | null {
+  const s = (raw ?? '').trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) { try { return new URL(s).href; } catch { return null; } }
+  if (/^data:text\/html/i.test(s)) return s;
+  if (/^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(s)) return `http://${s}`;
+  // A hostname-looking token (a dot, no whitespace, URL-safe chars) → https.
+  if (!/\s/.test(s) && /\./.test(s) && /^[\w.\-~:/?#[\]@!$&'()*+,;=%]+$/.test(s)) {
+    try { return new URL(`https://${s}`).href; } catch { /* fall through to search */ }
+  }
+  return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
+}
+// A self-contained blank document. NOT about:blank — the main-process attach
+// gate only permits data:text/html / loopback / workspace-prototype sources.
+const BROWSER_BLANK = 'data:text/html,%3C!doctype%20html%3E%3Cmeta%20charset%3Dutf-8%3E%3Ctitle%3ENew%20tab%3C%2Ftitle%3E';
 
 export function BrowserPanel(): React.ReactElement {
   const [url, setUrl] = useState(() => localStorage.getItem(URL_KEY) || 'http://localhost:5173');
@@ -86,8 +111,11 @@ export function BrowserPanel(): React.ReactElement {
     const host = hostRef.current;
     if (!host) return;
     const wv = document.createElement('webview') as unknown as WebviewEl;
-    wv.setAttribute('src', urlRef.current);
+    // partition MUST be set before src — Electron re-attaches the guest if the
+    // partition changes after a load, which itself can fire a spurious
+    // loadURL('') and the ERR_INVALID_URL the user was seeing.
     wv.setAttribute('partition', 'persist:browser-panel');
+    wv.setAttribute('src', normalizeUrl(urlRef.current) ?? BROWSER_BLANK);
     wv.style.width = '100%';
     wv.style.height = '100%';
     wv.style.border = '0';
@@ -96,19 +124,32 @@ export function BrowserPanel(): React.ReactElement {
       const ev = e as { level: number; message: string };
       setConsoleMsgs((m) => [...m, { level: ev.level, text: ev.message }].slice(-200));
     };
-    const onNav = (): void => { try { setUrl(wv.getURL()); setUrlDraft(wv.getURL()); } catch { /* ignore */ } };
+    // getURL() is '' until a document commits (and on a failed provisional load).
+    // Never write that back into state or it re-enters the sinks as an empty load.
+    const onNav = (): void => { try { const u = wv.getURL(); if (u && u !== BROWSER_BLANK) { setUrl(u); setUrlDraft(u); } } catch { /* ignore */ } };
     const onFail = (e: unknown): void => {
-      const ev = e as { errorDescription?: string; validatedURL?: string };
-      if (ev.validatedURL && ev.validatedURL === urlRef.current) setStatus(`load failed: ${ev.errorDescription || 'unreachable'} — is the dev server running?`);
+      const ev = e as { errorDescription?: string; validatedURL?: string; errorCode?: number };
+      // errorCode -3 is ABORTED (a superseded navigation) — not a real failure.
+      if (ev.errorCode === -3) return;
+      setStatus(`load failed: ${ev.errorDescription || 'unreachable'}${ev.validatedURL ? ` (${ev.validatedURL})` : ''} — check the URL or that the server is running.`);
     };
     wv.addEventListener('dom-ready', onReady);
     wv.addEventListener('console-message', onConsole as EventListener);
     wv.addEventListener('did-navigate', onNav as EventListener);
     wv.addEventListener('did-navigate-in-page', onNav as EventListener);
     wv.addEventListener('did-fail-load', onFail as EventListener);
+    // did-fail-provisional-load fires for connection-refused on the INITIAL load
+    // (the most common failure) which did-fail-load misses.
+    wv.addEventListener('did-fail-provisional-load', onFail as EventListener);
     host.appendChild(wv);
     wvRef.current = wv;
     return () => {
+      wv.removeEventListener('dom-ready', onReady);
+      wv.removeEventListener('console-message', onConsole as EventListener);
+      wv.removeEventListener('did-navigate', onNav as EventListener);
+      wv.removeEventListener('did-navigate-in-page', onNav as EventListener);
+      wv.removeEventListener('did-fail-load', onFail as EventListener);
+      wv.removeEventListener('did-fail-provisional-load', onFail as EventListener);
       try { host.removeChild(wv); } catch { /* ignore */ }
       wvRef.current = null;
     };
@@ -116,8 +157,8 @@ export function BrowserPanel(): React.ReactElement {
 
   // Navigate when the committed URL changes.
   const go = (next: string): void => {
-    const u = next.trim();
-    if (!u) return;
+    const u = normalizeUrl(next);
+    if (!u) { setStatus('Enter a URL or a search term.'); return; }
     setStatus('');
     setUrl(u);
     setUrlDraft(u);
@@ -252,7 +293,7 @@ export function BrowserPanel(): React.ReactElement {
   const runFlow = (name: string) => withWv(async (wv) => {
     const steps = flows[name] || [];
     for (const s of steps) {
-      if (s.action === 'navigate') { await wv.loadURL(s.target).catch(() => undefined); continue; }
+      if (s.action === 'navigate') { const nav = normalizeUrl(s.target); if (nav) await wv.loadURL(nav).catch(() => undefined); continue; }
       const r = s.action === 'type' ? await typeText(wv, s.target, s.text ?? '') : s.action === 'assertVisible' ? await assertVisible(wv, s.target) : await tap(wv, s.target);
       setStatus(`flow ${name}: ${s.action} ${s.target} → ${r.ok ? 'ok' : 'fail'}`);
       if (!r.ok) break;
@@ -267,9 +308,10 @@ export function BrowserPanel(): React.ReactElement {
   };
 
   // Load a URL and resolve once the page is ready (or a safety timeout).
-  const loadAndWait = (u: string): Promise<void> => new Promise((resolve) => {
+  const loadAndWait = (raw: string): Promise<void> => new Promise((resolve) => {
     const wv = wvRef.current;
-    if (!wv) { resolve(); return; }
+    const u = normalizeUrl(raw);
+    if (!wv || !u) { resolve(); return; }
     let done = false;
     const finish = (): void => { if (done) return; done = true; wv.removeEventListener('dom-ready', finish); resolve(); };
     wv.addEventListener('dom-ready', finish);
@@ -358,7 +400,7 @@ export function BrowserPanel(): React.ReactElement {
         <input
           className="browser-url"
           value={urlDraft}
-          placeholder="http://localhost:5173"
+          placeholder="Search or enter address"
           onChange={(e) => setUrlDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') go(urlDraft); }}
         />

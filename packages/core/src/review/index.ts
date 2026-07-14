@@ -6,8 +6,19 @@ export * from './critic.js';
 export * from './reviewFindings.js';
 export * from './reviewInstructions.js';
 export * from './reviewModel.js';
+export * from './reviewLens.js';
+export * from './securityReview.js';
+export * from './codeReviewContract.js';
+export * from './pentestReview.js';
+export * from './pentestFinding.js';
+export * from './sarif.js';
+export * from './pentestAgent.js';
+export * from './pentestSandbox.js';
+export * from './pentestProxy.js';
+export * from './pentestProxySession.js';
 export * from './reviewStore.js';
 export * from './reviewSynthesis.js';
+export * from './vulnerabilityIntelligence.js';
 // reviewModel and reviewSynthesis both declare an unrelated `ReviewFinding`
 // interface (UI review-model vs multi-reviewer synthesis). No consumer imports
 // the synthesis one by name, so the public `ReviewFinding` is reviewModel's.

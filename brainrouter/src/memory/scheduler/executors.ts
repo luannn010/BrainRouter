@@ -18,10 +18,15 @@
  */
 
 import type { IMemoryStore, LLMRunner } from "@kinqs/brainrouter-types";
+import type { LLMConfig } from "@kinqs/brainrouter-core/config";
 import { distillCoreIdentity } from "../pipeline/identity/identity-distiller.js";
 import { distillFocusScenes } from "../pipeline/focus/contextual-focus-builder.js";
 import { digestTreeNodes } from "../tree/digest.js";
 import { enqueueAgentJob } from "./jobs.js";
+import { runConnectorSync } from "../../connectors/syncExecutor.js";
+import { runPrSecurityReview, runPrCodeReview, runPrPentest, type PrReviewInput, type PrReviewDeps } from "../../integrations/prSecurityReview.js";
+import { runDomainPentest } from "../../integrations/domainPentest.js";
+import { loadVulnerabilityIntelligence } from "@kinqs/brainrouter-core/review";
 
 /**
  * 0.4.3 (MEM-10) — engine operations the depth-agent executors call. Declared
@@ -36,6 +41,20 @@ export interface JobEngineOps {
   summarizeBucket(userId: string, childIds: string[], kind: string): Promise<{ id: string } | null>;
   rechunkSources(userId: string, documentIds: string[]): Promise<{ rechunked: number; skipped: number; chunksWritten: number }>;
   runRetrievalBenchmark(userId: string, opts?: { sampleSize?: number; baseDir?: string }): Promise<{ summaryPath: string | null; statsByMode: Record<string, unknown>; sampled: number; passed: boolean }>;
+  /** ADR-017 D5 — the org's GitHub App creds (non-secret config + opened secret) for a webhook installation. */
+  findGithubAppByInstallation(installationId: string): Promise<{ config: Record<string, unknown>; secret: Record<string, string> } | null>;
+  /** Per-user GitHub connector credential for an explicitly requested manual review. */
+  findGithubAccountAuthorization?(userId: string): Promise<{ token: string; apiBase: string } | null>;
+  /** Per-user, org-pinned GitLab connector credential for a manual MR review. */
+  findGitlabAccountAuthorization?(userId: string, orgId: string): Promise<{ token: string; apiBase: string; config: Record<string, unknown> } | null>;
+  reviewRunner?(lens: "security" | "code" | "pentest", orgId?: string): LLMRunner | Promise<LLMRunner | undefined> | undefined;
+  reviewAssignment?(lens: "security" | "code" | "pentest", orgId?: string): { maxDiffChars?: number; timeoutMs?: number } | Promise<{ maxDiffChars?: number; timeoutMs?: number } | undefined> | undefined;
+  pentestAgentConfig?(orgId: string): Promise<LLMConfig | null>;
+  /** Ingest completed pentest findings into the org's cognitive memory (redacted, org-scoped). */
+  recordPentestFindings?(params: {
+    orgId: string; userId: string; target: string; reviewId: string;
+    findings: Array<{ id: string; severity: string; summary: string; details?: string; file?: string; line?: number; cvss?: number; cvssVector?: string; cwe?: string; cve?: string; poc?: string; remediation?: string; status?: string; confidence?: number }>;
+  }): Promise<number>;
 }
 
 export interface JobExecContext {
@@ -48,6 +67,8 @@ export interface JobExecContext {
    * its presence and the production runner always supplies it.
    */
   engine?: JobEngineOps;
+  /** Bound by the scheduler for best-effort persistent progress events. */
+  jobId?: string;
 }
 
 function requireEngine(ctx: JobExecContext): JobEngineOps {
@@ -55,6 +76,41 @@ function requireEngine(ctx: JobExecContext): JobEngineOps {
     throw new Error("depth-agent executor requires an engine in the job context (not wired)");
   }
   return ctx.engine;
+}
+
+/** Shared plumbing for the PR-review lenses (security + code review) — one input/deps shape. */
+function prReviewInput(input: any): PrReviewInput {
+  const forge = input?.forge === "gitlab" ? "gitlab" : "github";
+  return {
+    orgId: typeof input?.orgId === "string" ? input.orgId : undefined,
+    installationId: String(input?.installationId ?? ""),
+    forge,
+    credentialSource: forge === "gitlab" ? "gitlab_account" : input?.credentialSource === "github_account" ? "github_account" : "github_app",
+    requestedBy: typeof input?.requestedBy === "string" ? input.requestedBy : undefined,
+    repo: String(input?.repo ?? ""),
+    prNumber: Number(input?.prNumber),
+    headSha: String(input?.headSha ?? ""),
+  };
+}
+async function prReviewDeps(ctx: JobExecContext, lens: "security" | "code" | "pentest", orgId?: string): Promise<PrReviewDeps> {
+  const engine = requireEngine(ctx);
+  const assignment = await engine.reviewAssignment?.(lens, orgId);
+  const reviewRunner = await engine.reviewRunner?.(lens, orgId);
+  return {
+    llmRunner: reviewRunner ?? ctx.llmRunner,
+    fetchImpl: fetch,
+    nowSec: () => Math.floor(Date.now() / 1000),
+    getIntegration: (installationId) => engine.findGithubAppByInstallation(installationId),
+    getUserAuthorization: (userId) => engine.findGithubAccountAuthorization?.(userId) ?? Promise.resolve(null),
+    getGitlabAuthorization: (userId, requestedOrgId) => engine.findGitlabAccountAuthorization?.(userId, requestedOrgId) ?? Promise.resolve(null),
+    getVulnerabilityIntelligence: () => loadVulnerabilityIntelligence(),
+    maxDiffChars: assignment?.maxDiffChars,
+    timeoutMs: assignment?.timeoutMs,
+    onProgress: (event) => {
+      if (!ctx.jobId) return;
+      void ctx.store.appendJobProgress(ctx.jobId, { ts: new Date().toISOString(), ...event }).catch(() => {});
+    },
+  };
 }
 
 /** Runs the agent's work for `input`; returns a compact JSON summary for `output`. */
@@ -126,6 +182,17 @@ const EXECUTORS: Record<string, JobExecutor> = {
     const sampleSize = typeof input?.sampleSize === "number" ? input.sampleSize : undefined;
     return requireEngine(ctx).runRetrievalBenchmark(userIdOf(input), sampleSize !== undefined ? { sampleSize } : undefined);
   },
+  // ADR-016 C3 — sync one server-side connector (DB config + sealed token → core
+  // runtime → owner's memory), persisting the checkpoint back to the DB.
+  connector_sync: async (input) => runConnectorSync(String(input?.connectorId ?? "")),
+
+  // ADR-017 D5 — the GitHub App bot's automatic PR reviews. Both are enqueued by the
+  // pull_request webhook; each mints the installation token, reviews the diff with its
+  // LENS, and posts back inline suggestions + a summary + a gating check-run.
+  "pr-security-review": async (input, ctx) => runPrSecurityReview(prReviewInput(input), await prReviewDeps(ctx, "security", typeof input?.orgId === "string" ? input.orgId : undefined)),
+  "pr-code-review": async (input, ctx) => runPrCodeReview(prReviewInput(input), await prReviewDeps(ctx, "code", typeof input?.orgId === "string" ? input.orgId : undefined)),
+  "pr-pentest": async (input, ctx) => runPrPentest(prReviewInput(input), await prReviewDeps(ctx, "pentest", typeof input?.orgId === "string" ? input.orgId : undefined)),
+  "domain-pentest": async (input, ctx) => runDomainPentest(input, ctx),
 };
 
 export function getJobExecutor(agentId: string): JobExecutor | undefined {

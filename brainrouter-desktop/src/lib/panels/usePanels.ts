@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import type { PanelId } from '../../panels/index.js';
 import { devPanels, devFlag } from '../devFlags.js';
 import { VALID_PANEL_IDS } from '../../constants.js';
-import { clampSideRailWidth, openWidthFor, reorderByValue, SIDE_RAIL_DEFAULT } from './sideRailLayout.js';
+import { clampSideRailWidth, openWidthFor, reorderByValue, SIDE_RAIL_MIN } from './sideRailLayout.js';
 
 // Persisted layouts can carry renamed/retired panel ids. The Markdown writing
 // experience ('write' → 'docs') folded into the Editor, so both map to 'editor'.
@@ -84,9 +84,8 @@ export function usePanels(q: (id: string, name: string, args?: Record<string, un
     if (saved !== null) return saved === '1';
     return devFlag('side') || devPanels().length > 0;
   });
-  // On launch, it opens at a comfortable default width (SIDE_RAIL_DEFAULT),
-  // not its bare minimum — still drag-resizable down to SIDE_RAIL_MIN.
-  const [sideWidth, setSideWidth] = useState(SIDE_RAIL_DEFAULT);
+  // On launch, it starts at its minimum size (SIDE_RAIL_MIN).
+  const [sideWidth, setSideWidth] = useState(SIDE_RAIL_MIN);
   const [sideFullScreen, setSideFullScreen] = useState(() => localStorage.getItem('br-side-fullscreen') === '1');
   // §panel-drawer — default DOCKED (pinned) so the panel is a persistent
   // resizable column that STAYS PUT when you click elsewhere; unpinning turns it

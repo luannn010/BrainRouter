@@ -45,6 +45,8 @@ import {
   MemoryTreeNode,
   VaultExportEntry,
   GraphAnalytics,
+  BrainChatRequest,
+  BrainChatResponse,
 } from "@kinqs/brainrouter-types";
 
 export class BrainRouterApiError extends Error {
@@ -82,9 +84,22 @@ export class BrainRouterClient {
     return this;
   }
 
+  /** ADR-016 C1 — pin the active org, sent as X-BrainRouter-Org on every request,
+   *  so org-shared memory + org-scoped routes resolve for a signed-in client. */
+  private activeOrg = "";
+  withActiveOrg(orgId: string) {
+    // Allowlist to id-safe chars so a stray value can't inject a CRLF / extra
+    // header when this is sent as X-BrainRouter-Org (org ids are uuid/slug shaped).
+    this.activeOrg = (orgId ?? "").trim().replace(/[^A-Za-z0-9_-]/g, "");
+    return this;
+  }
+
   private headers(tokenOverride?: string): Record<string, string> {
     const bearer = tokenOverride || this.token || this.apiKey;
-    return bearer ? { Authorization: `Bearer ${bearer}` } : {};
+    return {
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+      ...(this.activeOrg ? { "X-BrainRouter-Org": this.activeOrg } : {}),
+    };
   }
 
   private qs(params?: object): string {
@@ -164,8 +179,11 @@ export class BrainRouterClient {
   // HONK-H3.3 — the dashboard fleet console: client-pushed fleet snapshots, one per host.
   getFleetSnapshots() { return this.get<{ hosts: FleetSnapshotEntry[] }>("/api/fleet/snapshots"); }
   // 0.4.3 — source documents + chunks (the captured, citable source layer).
-  getSources(params?: { limit?: number }) { return this.get<{ documents: Array<SourceDocument & { chunkCount: number }> }>("/api/brain/sources", params); }
+  getSources(params?: { limit?: number; projectId?: string; workspaceTag?: string }) {
+    return this.get<{ documents: Array<SourceDocument & { chunkCount: number }> }>("/api/brain/sources", params);
+  }
   getSourceChunks(documentId: string) { return this.get<{ chunks: SourceChunk[] }>(`/api/brain/sources/${documentId}/chunks`); }
+  chat(body: BrainChatRequest) { return this.post<BrainChatResponse>("/api/brain/chat", body); }
   // 0.4.3 — blackboard / memory tree / vault layers.
   getBlackboard(params?: { status?: string }) { return this.get<{ items: BlackboardItem[] }>("/api/brain/blackboard", params); }
   getTreeRoots(params?: { kind?: string }) { return this.get<{ roots: MemoryTreeNode[] }>("/api/brain/tree", params); }

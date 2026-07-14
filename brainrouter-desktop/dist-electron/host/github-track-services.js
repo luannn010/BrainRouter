@@ -15,6 +15,7 @@
 import { execFile } from 'node:child_process';
 import { loadConfig } from '@kinqs/brainrouter-core/config';
 import { mergeGithubCliEnv, normalizeGithubCliError } from '../ghCli.js';
+import { brainRouterAccountHeaders, resolveBrainRouterAccountContext } from '../accountIntegration.js';
 import { git } from './helpers.js';
 import { createBackgroundTask, updateBackgroundTask } from '@kinqs/brainrouter-core/background';
 import { ensureProject, getProject, getWorkItem, listWorkItems, createWorkItem, transitionWorkItem, updateWorkItem, linkWorkItem, getGithubLinks, setGithubLink, } from '@kinqs/brainrouter-core/track';
@@ -334,6 +335,27 @@ export function buildGithubTrackServices(deps) {
         }) ?? connector;
         return { ...result, connector: updated };
     };
+    // ADR-017 D1 — every repo the signed-in user's GitHub App connection can access,
+    // via the server-side broker (no owner needed). Empty when not signed in / not
+    // OAuth-connected, so non-OAuth connectors fall back to the owner path.
+    const listAccessibleReposViaBroker = async (limit) => {
+        try {
+            const account = await resolveBrainRouterAccountContext(loadConfig());
+            if (!account)
+                return [];
+            const r = await fetch(`${account.baseUrl}/api/connectors/github/repos`, {
+                headers: brainRouterAccountHeaders(account),
+            });
+            if (!r.ok)
+                return [];
+            const j = await r.json();
+            const names = (j.repos ?? []).map((x) => String(x.fullName ?? '')).filter(Boolean);
+            return typeof limit === 'number' ? names.slice(0, limit) : names;
+        }
+        catch {
+            return [];
+        }
+    };
     const githubConnectorClient = () => ({
         async listRepositories(owner, opts) {
             const limit = Math.max(1, Math.min(1000, opts?.limit ?? 100));
@@ -341,6 +363,9 @@ export function buildGithubTrackServices(deps) {
             if (listed.error)
                 throw new Error(listed.error);
             return (listed.data ?? []).map((repo) => repo.nameWithOwner ?? '').filter(Boolean);
+        },
+        async listAccessibleRepositories(opts) {
+            return listAccessibleReposViaBroker(opts?.limit);
         },
         async listIssues(repo, opts) {
             const args = ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '100', '--json', 'number,title,body,state,url,updatedAt,labels,assignees'];

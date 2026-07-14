@@ -16,7 +16,7 @@ import { jobRowToRecord, asNumber, pg } from "../converters.js";
 import type { Executor } from "./executor.js";
 
 const JOB_COLUMNS =
-  "id, kind, status, priority, attempts, max_attempts, run_after, locked_at, parent_job_id, input_json, output_json, error, created_at, updated_at";
+  "id, kind, status, priority, attempts, max_attempts, run_after, locked_at, parent_job_id, input_json, output_json, progress_json, error, created_at, updated_at";
 
 export async function enqueueMemoryJob(exec: Executor, input: MemoryJobEnqueueInput, options?: { idGenerator?: () => string; now?: string }): Promise<MemoryJobRecord> {
   const now = options?.now ?? new Date().toISOString();
@@ -32,6 +32,14 @@ export async function enqueueMemoryJob(exec: Executor, input: MemoryJobEnqueueIn
 export async function getMemoryJob(exec: Executor, id: string): Promise<MemoryJobRecord | null> {
   const row = await exec.one(`SELECT ${JOB_COLUMNS} FROM memory_jobs WHERE id = $1`, [id]);
   return row ? jobRowToRecord(row as any) : null;
+}
+
+/** Append an activity event atomically; progress is observability, never control flow. */
+export async function appendJobProgress(exec: Executor, id: string, event: { ts: string; kind: string; msg: string; data?: Record<string, unknown> }): Promise<void> {
+  await exec.run(
+    "UPDATE memory_jobs SET progress_json = ((progress_json::jsonb || $1::jsonb)::text), updated_at = $2 WHERE id = $3",
+    [JSON.stringify([event]), new Date().toISOString(), id],
+  );
 }
 
 export async function listMemoryJobs(exec: Executor, filters?: MemoryJobListFilters): Promise<MemoryJobRecord[]> {
@@ -51,6 +59,33 @@ export async function listMemoryJobs(exec: Executor, filters?: MemoryJobListFilt
           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
          ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?`),
     params,
+  );
+  return rows.map((r) => jobRowToRecord(r as any));
+}
+
+/**
+ * ADR-017 D5 — recent PR-review jobs (security + code-review lenses) for an org's
+ * Reviews dashboard. The org lives in `input_json` (memory_jobs has no org column);
+ * ordered newest-first for display (the queue's default ASC ordering is for draining).
+ */
+export async function listReviewJobsForOrg(exec: Executor, orgId: string, limit = 30): Promise<MemoryJobRecord[]> {
+  const rows = await exec.rows(
+    pg(`SELECT ${JOB_COLUMNS} FROM memory_jobs
+          WHERE kind IN ('pr-security-review','pr-code-review','pr-pentest','domain-pentest')
+            AND (input_json::jsonb ->> 'orgId') = ?
+         ORDER BY created_at DESC, id DESC LIMIT ?`),
+    [orgId, limit],
+  );
+  return rows.map((r) => jobRowToRecord(r as any));
+}
+
+export async function listPentestJobsForOrg(exec: Executor, orgId: string, limit = 100): Promise<MemoryJobRecord[]> {
+  const rows = await exec.rows(
+    pg(`SELECT ${JOB_COLUMNS} FROM memory_jobs
+          WHERE kind IN ('domain-pentest','pr-pentest')
+            AND (input_json::jsonb ->> 'orgId') = ?
+         ORDER BY created_at DESC, id DESC LIMIT ?`),
+    [orgId, limit],
   );
   return rows.map((r) => jobRowToRecord(r as any));
 }

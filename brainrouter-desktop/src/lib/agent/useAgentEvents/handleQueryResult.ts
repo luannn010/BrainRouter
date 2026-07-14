@@ -25,8 +25,7 @@ import { fmt, download } from '../../format.js';
 import { rid } from '../../rid.js';
 import { type AgentEventsCtx, type ToolCatalog, getStableRowId, isWorkspaceScopedReviewQuery } from './types.js';
 // UI-TEST fusion — the screen map + story journeys the uitest:* results carry.
-import type { UiMap } from '@kinqs/brainrouter-ui-test/dist/types.js';
-import type { Story } from '@kinqs/brainrouter-ui-test/dist/flow/storySchema.js';
+import type { UiMap, Story } from '@kinqs/brainrouter-core/uitest';
 
 export function createHandleQueryResult(ctx: AgentEventsCtx): (rawId: string, result: unknown, error?: string, resultWorkspaceRoot?: string) => void {
   const {
@@ -233,9 +232,30 @@ export function createHandleQueryResult(ctx: AgentEventsCtx): (rawId: string, re
         }
         return;
       }
-      case 'q-track-sync':
-        if (result && typeof result === 'object' && !(result as { error?: string }).error) setTrack((t) => ({ ...t, sync: { ...t.sync, result: result as SyncResult } }));
+      case 'q-track-sync': {
+        const r = result as SyncResult | null;
+        if (!r || typeof r !== 'object') return;
+        setTrack((t) => ({
+          ...t,
+          ...(Array.isArray(r.items) ? { items: r.items } : {}),
+          sync: { ...t.sync, result: r },
+        }));
+        const errors = Array.isArray(r.errors) ? r.errors.length : 0;
+        const changed = r.direction === 'sync'
+          ? (r.pushed ?? 0) + (r.pulled ?? 0) + (r.created?.local ?? 0) + (r.created?.remote ?? 0)
+          : (r.exported ?? r.imported ?? []).length;
+        const conflicts = r.conflicts?.length ?? 0;
+        setToast(errors
+          ? `GitHub sync finished with ${errors} error${errors === 1 ? '' : 's'} — review the sync result.`
+          : conflicts
+            ? `GitHub sync found ${conflicts} conflict${conflicts === 1 ? '' : 's'} — both versions were preserved for review.`
+          : r.dryRun
+            ? `GitHub sync preview ready — ${changed} change${changed === 1 ? '' : 's'} found.`
+            : changed
+              ? `GitHub sync applied ${changed} change${changed === 1 ? '' : 's'} and refreshed Track.`
+              : 'GitHub and Track are already in sync — no changes were needed.');
         return;
+      }
       case 'q-track-scan': {
         const r = result as { scanned?: number; linked?: unknown[]; transitioned?: unknown[]; items?: WorkItem[] } | null;
         if (Array.isArray(r?.items)) setTrack((t) => ({ ...t, items: r!.items! }));

@@ -34,9 +34,22 @@ import {
   type UiCommandResult,
   type ManifestDiff,
   type Story,
-} from '@kinqs/brainrouter-ui-test/dist/index.js';
+} from '@kinqs/brainrouter-core/uitest';
 import { shouldIgnoreWatchPath } from './fileWatch.js';
 import { findFreePort, isPortFree } from './portUtil.js';
+// IPC is agent-reachable — names + extract paths it receives are untrusted.
+import { safeName, isPathWithinRoot, mdSafe, isAllowedLauncher, hasShellMeta } from './uitestSafety.js';
+import { isLoopbackHttpSrc } from './webviewPolicy.js';
+
+/**
+ * The `uitest:*` channel is agent-reachable — log the full error to the dev
+ * console but return a GENERIC message across IPC so fs paths / env / stack
+ * traces don't leak to the caller (CWE-209).
+ */
+function ipcError(err: unknown, what: string): string {
+  console.error(`[uitest] ${what} failed:`, err);
+  return `${what} failed`;
+}
 
 const SOURCE_RE = /\.[jt]sx?$/i;
 const MAX_FILES = 5000;
@@ -104,7 +117,9 @@ export interface UiTestHost {
 }
 
 function sanitizeFlowName(name: string): string {
-  return (name || 'flow').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'flow';
+  // path.basename first so an agent-supplied `../evil` / absolute path can't
+  // escape the flows/stories/screenshots dir it's joined into.
+  return safeName(name, 'flow');
 }
 
 async function dispatch(layer: CommandLayer, step: UiTestStep): Promise<UiCommandResult> {
@@ -176,13 +191,25 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
    *  selected" path. Applies the same source/ignore/size guards as `walk`. */
   function readOnly(paths: string[]): Array<{ path: string; text: string }> {
     const out: Array<{ path: string; text: string }> = [];
+    // Canonicalize the root once so the symlink check below compares real paths.
+    let realRoot: string;
+    try { realRoot = fs.realpathSync(workspaceRoot); } catch { realRoot = path.resolve(workspaceRoot); }
     const seen = new Set<string>();
     for (const rel of paths) {
       const norm = String(rel ?? '').split(path.sep).join('/');
       if (!norm || seen.has(norm) || !SOURCE_RE.test(norm) || shouldIgnoreWatchPath(norm)) continue;
       seen.add(norm);
+      // Containment: an agent can pass `extract({ only: ['../../etc/passwd.ts'] })`
+      // — a `..` escape still matches SOURCE_RE, so reject anything resolving
+      // outside the workspace before touching the filesystem.
+      if (!isPathWithinRoot(workspaceRoot, norm)) continue;
       try {
         const full = path.join(workspaceRoot, norm);
+        // Symlink guard: the lexical check above can't see a symlink pointing
+        // outside the workspace. Resolve the REAL path and re-check containment
+        // before reading, so `symlink-dir/file.ts` can't escape the repo.
+        const realFull = fs.realpathSync(full);
+        if (realFull !== realRoot && !realFull.startsWith(realRoot + path.sep)) continue;
         if (fs.statSync(full).size > MAX_BYTES) continue;
         out.push({ path: norm, text: fs.readFileSync(full, 'utf8') });
       } catch {
@@ -255,7 +282,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       fs.writeFileSync(path.join(flowsDir(), `${safe}.flow.yaml`), yaml, 'utf8');
       return { ok: true, name: safe };
     } catch (err) {
-      return { ok: false, name, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, name, error: ipcError(err, 'save flow') };
     }
   }
 
@@ -306,7 +333,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       fs.writeFileSync(path.join(storiesDir(), `${safe}.story.yaml`), serializeStoryYaml({ ...story, id: safe }), 'utf8');
       return { ok: true, id: safe };
     } catch (err) {
-      return { ok: false, id: story.id, error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, id: story.id, error: ipcError(err, 'save story') };
     }
   }
 
@@ -335,7 +362,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       fs.writeFileSync(abs, buf);
       return { path: relFromRoot(abs) };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { error: ipcError(err, 'save screenshot') };
     }
   }
 
@@ -343,10 +370,12 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
     const total = a.results.length;
     const allOk = total > 0 && a.passed === total;
     const lines: string[] = [];
-    lines.push(`# UI run: ${a.title}`, '');
-    lines.push(`- **Story:** ${a.id}`);
+    // title / id / baseUrl are agent-supplied (uitest:run-report) — HTML-encode
+    // them so an injected tag can't execute if the report is rendered in a webview.
+    lines.push(`# UI run: ${mdSafe(a.title)}`, '');
+    lines.push(`- **Story:** ${mdSafe(a.id)}`);
     lines.push(`- **When:** ${new Date().toISOString()}`);
-    if (a.baseUrl) lines.push(`- **Base URL:** ${a.baseUrl}`);
+    if (a.baseUrl) lines.push(`- **Base URL:** ${mdSafe(a.baseUrl)}`);
     lines.push(`- **Result:** ${a.passed}/${total} step(s) passed ${allOk ? '✅' : '❌'}`, '');
     lines.push('## Steps', '');
     lines.push('| # | Action | Target | Result | Notes |');
@@ -360,7 +389,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       for (const p of a.shotPaths) {
         // Report lives in …/reports, screenshots in …/screenshots — link relatively.
         const rel = p.replace(/^\.brainrouter\/ui-tests\//, '../');
-        lines.push(`![${p.split('/').pop()}](${rel})`, '');
+        lines.push(`![${mdSafe(p.split('/').pop())}](${encodeURI(rel)})`, '');
       }
     }
     return lines.join('\n') + '\n';
@@ -386,7 +415,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       fs.writeFileSync(abs, md, 'utf8');
       return { reportPath: relFromRoot(abs), markdown: md, screenshots: shotPaths };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { error: ipcError(err, 'save run report') };
     }
   }
 
@@ -408,7 +437,10 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
             port: Number(o.port) || 0,
           };
         })
-        .filter((c) => c.port > 0);
+        // launch.json is repo-controlled — only spawn a whitelisted launcher, and
+        // reject any arg carrying a shell metacharacter (spawn uses shell:true on
+        // Windows). A config that fails is dropped, not run (CWE-78).
+        .filter((c) => c.port > 0 && isAllowedLauncher(c.exe) && !c.args.some(hasShellMeta));
     } catch {
       return [];
     }
@@ -462,13 +494,20 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
     // desktop app's OWN dev port (5173): that's this app, not the app under test.
     // The Browser panel defaults to :5173, so a story run must fall through to the
     // workspace's dev config (e.g. the mock on :5174) instead of trying to host 5173.
-    const rawUrl = (String(opts?.url ?? '').trim() || session().baseUrl || '').trim();
+    // Only honor a caller URL that is LOOPBACK http(s); ignore anything else so
+    // an agent can't steer the probe/host at a non-loopback origin.
+    const optUrl = opts?.url && isLoopbackHttpSrc(String(opts.url)) ? String(opts.url).trim() : '';
+    const rawUrl = (optUrl || session().baseUrl || '').trim();
     const curUrl = portOf(rawUrl) === DESKTOP_PORT ? '' : rawUrl;
     const curPort = portOf(curUrl);
-    if (curPort && (await probe(curPort))) return { url: curUrl || `http://localhost:${curPort}`, started: false };
 
-    // 2) choose a dev config (never the desktop app's own port).
+    // Choose the dev config(s) up front so we know which ports are legitimate.
     const configs = readLaunchConfigs().filter((c) => c.port !== DESKTOP_PORT);
+    // Only ever probe a KNOWN port — a launch-config port or the session's own
+    // base URL — never an arbitrary agent-supplied one (prevents localhost port
+    // scanning / local-service reconnaissance, CWE-200).
+    const knownPorts = new Set<number>([...configs.map((c) => c.port), portOf(session().baseUrl)].filter((p) => p > 0));
+    if (curPort && knownPorts.has(curPort) && (await probe(curPort))) return { url: curUrl || `http://localhost:${curPort}`, started: false };
     let cfg = opts?.name ? configs.find((c) => c.name === opts.name) : undefined;
     if (!cfg && curPort) cfg = configs.find((c) => c.port === curPort);
     if (!cfg) cfg = configs[0];
@@ -499,6 +538,11 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
       note = `Port ${cfg.port} is in use — starting "${cfg.name}" on ${alt} instead.`;
       port = alt;
     }
+    // Runtime guard: never spawn on the desktop app's OWN dev port. The config
+    // list is already filtered, but a free-port fallback could still land on it.
+    if (port === DESKTOP_PORT) {
+      return { url, started: false, error: `refusing to auto-start on :${DESKTOP_PORT} — that's the desktop app's own dev port, not the app under test` };
+    }
     const spawnUrl = `http://localhost:${port}`;
     const isWin = process.platform === 'win32';
     const exe = isWin && /^npm$/i.test(cfg.exe) ? 'npm.cmd' : cfg.exe;
@@ -509,7 +553,7 @@ export function createUiTestHost(workspaceRoot: string): UiTestHost {
     try {
       child = spawn(exe, args, { cwd: workspaceRoot, env: { ...process.env }, detached: !isWin, shell: isWin, stdio: 'ignore' });
     } catch (err) {
-      return { url: spawnUrl, started: false, error: `could not start "${cfg.name}": ${err instanceof Error ? err.message : String(err)}` };
+      return { url: spawnUrl, started: false, error: ipcError(err, `start dev server "${cfg.name}"`) };
     }
     devServer = { child, port };
     child.on('exit', () => { if (devServer?.child === child) devServer = null; });

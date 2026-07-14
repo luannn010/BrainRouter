@@ -14,11 +14,18 @@ import { mergeGithubCliEnv, normalizeGithubCliError } from './ghCli.js';
 // host/helpers — pure, closure-free helpers (config scrubbing, Track↔GitHub
 // normalization, computer-use/secret bridges, endpoint model probing, transcript
 // row reconstruction) extracted verbatim from this file.
-import { createComputerUseBridge, createSecretBridge, git, type ParentPortLike, type TermSession } from './host/helpers.js';
+import { createComputerUseBridge, createSecretBridge, git, type ParentPortLike } from './host/helpers.js';
 // host/queries — the extracted query router (the former inline ~2400-line
 // `queries` object). host.ts assembles the HostContext bag below and folds
 // buildQueries(ctx) into createHostCore({ queries }).
 import { buildQueries } from './host/queries.js';
+import { PtyRegistry } from './host/pty.js';
+import { HostedAgentManager } from './host/hostedAgents.js';
+import { FanoutManager } from './host/fanoutManager.js';
+import { RemoteWorktreeManager } from './host/sshRemote.js';
+import { MobileRelayServer } from './host/mobileRelayServer.js';
+import { ensureBrainSession, getBrainSessionKey } from './host/brainSession.js';
+import { resolveBrainRouterAccountApi } from './accountIntegration.js';
 // host/github-track-services — the extracted gh-CLI / connector / Track-PR
 // service layer. host.ts builds it with its runtime deps and folds the returned
 // functions into the HostContext.
@@ -298,6 +305,9 @@ async function main(): Promise<void> {
     await mcpClient.connectAll(config.servers ?? {}, llm, { timeoutMs: 5_000 });
     mcpClient.startReconnectSupervisor(); // WS9 — auto-reconnect dropped MCP servers in the background
   } catch { /* offline-mode: local tools only, same as the CLI */ }
+  // FED — register this desktop as an active session for the signed-in user, so it
+  // appears on the Account page + dashboard "Devices & sessions" (heartbeats itself).
+  void ensureBrainSession(mcpClient, workspaceRoot);
 
   // REMOTE-BRAIN Phase 3d — call a brain Atlas tool via the MCP pool, parsing its
   // JSON text result. Best-effort: null on any failure so the local artifact path
@@ -634,9 +644,60 @@ async function main(): Promise<void> {
     emitRecordEvent({ kind: 'provenance', subjectKind: 'artifact', subjectId: record.id, provenance });
   };
 
-  // DESK-5c — terminal session registry + endpoint-models cache.
-  const terms = new Map<string, TermSession>();
-  let termSeq = 0;
+  // One real PTY registry per workspace host. A panel can detach/re-attach while
+  // the shell and scrollback remain host-owned; host shutdown kills every child.
+  const ptyRegistry = new PtyRegistry({ workspaceRoot });
+  const hostedAgents = new HostedAgentManager({
+    workspaceRoot,
+    ptyRegistry,
+    onTransition: (session) => {
+      send({
+        seq: ++portSeq,
+        ts: Date.now(),
+        sessionKey: session.sessionKey,
+        event: { kind: 'status', text: `${session.adapterId}: ${session.status}` },
+      });
+      try {
+        appendTranscriptEntry(workspaceRoot, session.sessionKey, {
+          role: 'system',
+          content: `[hosted-agent] ${session.adapterId} status: ${session.status}`,
+        });
+      } catch { /* status persistence is advisory */ }
+    },
+  });
+  const remoteWorktrees = new RemoteWorktreeManager(workspaceRoot);
+  const fanoutManager = new FanoutManager({ workspaceRoot, hostedAgents, remoteWorktrees });
+  const mobileRelay = new MobileRelayServer({
+    status: () => fanoutManager.list(),
+    terminalSnapshot: (candidateId) => {
+      const attached = fanoutManager.attach(candidateId);
+      return attached ? { snapshot: attached.snapshot, start: attached.start, next: attached.next, alive: attached.alive } : null;
+    },
+    terminalInput: (candidateId, data) => fanoutManager.writeTerminal(candidateId, data),
+    agentControl: (candidateId, action, text) => fanoutManager.control(candidateId, action, text),
+    // Account-based pairing: a peer is trusted if its BrainRouter account token
+    // resolves to the SAME account as this desktop — proven by the account-scoped
+    // GET /api/sessions returning THIS desktop's own session key (another
+    // account's token never sees it). No manual QR required.
+    verifyAccountPeer: async (accountToken) => {
+      const api = resolveBrainRouterAccountApi(loadConfig());
+      const ownKey = getBrainSessionKey();
+      if (!api?.baseUrl || !ownKey) return false;
+      const base = api.baseUrl.replace(/\/+$/, '');
+      // The account token is a long-lived credential — never send it over
+      // cleartext http (except loopback dev) and never follow a redirect that
+      // could carry it to an attacker host (CWE-601).
+      let u: URL; try { u = new URL(base); } catch { return false; }
+      const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(u.hostname);
+      if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) return false;
+      try {
+        const res = await fetch(`${base}/api/sessions`, { headers: { Authorization: `Bearer ${accountToken}` }, redirect: 'error' });
+        if (!res.ok) return false;
+        const data = (await res.json()) as { sessions?: Array<{ sessionKey?: string }> };
+        return Array.isArray(data.sessions) && data.sessions.some((s) => s.sessionKey === ownKey);
+      } catch { return false; }
+    },
+  });
   // Per-endpoint /models cache ('' = the active llm; otherwise a named provider).
   const modelsCacheByKey = new Map<string, { models: string[]; at: number }>();
   // DESK-5d — PR state cache (gh is a network call; the sidebar refreshes often).
@@ -964,7 +1025,7 @@ async function main(): Promise<void> {
     lifecycleActionFor, emitRecordEvent, taskEventView, emitTaskEvent, taskProgress,
     verifyTitle, observeVerificationEvent, goalStrikes,
     captureRequirementNote, captureAnnotationNote, captureAnnotationExportNote, captureArtifactNote,
-    terms, nextTermSeq: () => ++termSeq, modelsCacheByKey,
+    ptyRegistry, hostedAgents, fanoutManager, remoteWorktrees, mobileRelay, modelsCacheByKey,
     getPrCache: () => prCache, setPrCache: (v) => { prCache = v; },
     getPrStatusMapCache: () => prStatusMapCache, setPrStatusMapCache: (v) => { prStatusMapCache = v; },
     readTranscriptCached, isoNow, collectWorkingDiff,
@@ -1028,6 +1089,10 @@ async function main(): Promise<void> {
       clearInterval(connectorSchedulerTimer);
       clearTimeout(connectorSchedulerBootTimer);
       stopWorkspaceWatcher();
+      mobileRelay.stop();
+      fanoutManager.dispose();
+      hostedAgents.dispose();
+      ptyRegistry.dispose();
       uitest.dispose();
       void mcpClient.close?.();
       process.exit(0);

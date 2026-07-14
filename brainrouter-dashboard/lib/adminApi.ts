@@ -13,12 +13,17 @@ interface FetchOpts {
   method?: string;
   body?: unknown;
   orgId?: string;
+  signal?: AbortSignal;
 }
 
-async function authFetch<T = unknown>(path: string, opts: FetchOpts = {}): Promise<T> {
+/** Shared authenticated request path for dashboard-only API surfaces that have
+ * not landed in the public SDK yet. Keeping refresh/retry and org pinning here
+ * prevents feature pages from growing subtly different auth behavior. */
+export async function authFetch<T = unknown>(path: string, opts: FetchOpts = {}): Promise<T> {
   const doFetch = (token: string): Promise<Response> =>
     fetch(`${BASE_URL}${path}`, {
       method: opts.method ?? "GET",
+      signal: opts.signal,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -130,6 +135,58 @@ export interface OrgMember {
   createdAt: string;
 }
 
+export interface ReviewJob {
+  id: string;
+  lens: "security" | "code" | "pentest";
+  status: string;
+  repo: string | null;
+  prNumber: number | null;
+  findings: number | null;
+  blocking: number | null;
+  findingsDetail?: { file: string; line?: number; severity: string; title?: string; summary?: string; status?: string; cwe?: string; preExisting?: boolean; suggestable?: boolean }[];
+  progress?: { ts: string; kind: string; msg: string; data?: Record<string, unknown> }[];
+  skipped: string | null;
+  error: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface ReviewPullRequest {
+  repo: string; number: number; title: string; author: string | null; headSha: string | null; updatedAt: string | null; url: string | null;
+  security: ReviewJob | null; code: ReviewJob | null;
+}
+export interface ReviewPullRequestDetail {
+  repo: string; number: number; title: string; author: string | null; branch: string | null; headSha: string | null; url: string | null;
+  checks: { id?: number; name?: string; conclusion?: string | null; status?: string; html_url?: string }[];
+  reviews: ReviewJob[];
+}
+
+export interface ReviewSummary {
+  periodDays: number;
+  metrics: { securityScore: number; openIssues: number; issuesFound: number; fixRate: number; prsReviewed: number; pentests: number };
+  severity: { critical: number; high: number; medium: number; low: number; info: number };
+  verdicts: { approved: number; commented: number; changesRequested: number };
+  history: Array<{ date: string; critical: number; high: number; medium: number; low: number }>;
+  repositories: Array<{ repository: string; prs: number; findings: number; addressed: number }>;
+}
+
+export interface ConnectorStatus {
+  source: string;
+  connected: boolean;
+  connector: { id: string; name: string; status: string; enabled: boolean; hasCredential: boolean; config: Record<string, unknown>; lastRunAt: string | null; lastError: string | null } | null;
+  account: string | null;
+  scopes: string | null;
+}
+
+export interface PentestTarget {
+  id: string; orgId: string; createdBy: string; kind: "domain" | "repository"; value: string; normalizedValue: string; label: string | null; authorizedAt: string; createdAt: string; updatedAt: string;
+}
+export type PentestScanMode = "code-review" | "standard" | "full-audit";
+export const PENTEST_SCAN_MODE_LABELS: Record<PentestScanMode, string> = { "code-review": "Code Review", standard: "Standard Pentest", "full-audit": "Full Audit Pentest" };
+export interface PentestRun {
+  id: string; status: string; targetId: string; target: string; kind: string; scanMode?: PentestScanMode; findings: number; error: string | null; createdAt: string; updatedAt: string;
+}
+
 export const adminApi = {
   listProviders: (orgId?: string) =>
     authFetch<{ providers: ProviderConfig[]; secretStorageReady: boolean }>("/api/admin/providers", { orgId }),
@@ -147,14 +204,20 @@ export const adminApi = {
       "/api/admin/providers/probe-models",
       { method: "POST", body: { baseUrl, apiKey, kind }, orgId },
     ),
+  /** Test-embed a model to get its dimension + the store's current one (swap guard). */
+  probeEmbeddingDim: (baseUrl: string, apiKey: string, model: string, orgId?: string) =>
+    authFetch<{ ok: boolean; dimensions: number | null; currentDimensions: number }>(
+      "/api/admin/providers/probe-embedding-dim",
+      { method: "POST", body: { baseUrl, apiKey, model }, orgId },
+    ),
   /** The providers the shared core (desktop/CLI) supports for a KIND — reused verbatim. */
   providerCatalog: (kind?: string) =>
     authFetch<{ providers: { id: string; label: string; endpoint: string; local: boolean; requestFormat?: string; capabilities?: string[]; defaultModels?: string[] }[] }>(`/api/admin/providers/catalog${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
   /** Per-subagent-role model routing (desktop/CLI parity). */
   getAgentModels: (orgId?: string) =>
-    authFetch<{ roles: string[]; assignments: Record<string, { provider?: string; model?: string }> }>("/api/admin/agent-models", { orgId }),
-  setAgentModels: (assignments: Record<string, { provider?: string; model?: string }>, orgId?: string) =>
-    authFetch<{ assignments: Record<string, { provider?: string; model?: string }> }>("/api/admin/agent-models", { method: "PUT", body: { assignments }, orgId }),
+    authFetch<{ roles: string[]; assignments: Record<string, { provider?: string; model?: string; maxDiffChars?: number; timeoutMs?: number }> }>("/api/admin/agent-models", { orgId }),
+  setAgentModels: (assignments: Record<string, { provider?: string; model?: string; maxDiffChars?: number; timeoutMs?: number }>, orgId?: string) =>
+    authFetch<{ assignments: Record<string, { provider?: string; model?: string; maxDiffChars?: number; timeoutMs?: number }> }>("/api/admin/agent-models", { method: "PUT", body: { assignments }, orgId }),
   // GitHub App / integration configs (RBAC: triggers:manage).
   listIntegrations: (orgId?: string) =>
     authFetch<{ integrations: IntegrationConfig[]; secretStorageReady: boolean }>("/api/admin/integrations", { orgId }),
@@ -164,7 +227,50 @@ export const adminApi = {
     authFetch<{ integration: IntegrationConfig }>(`/api/admin/integrations/${id}`, { method: "PATCH", body, orgId }),
   deleteIntegration: (id: string, orgId?: string) =>
     authFetch(`/api/admin/integrations/${id}`, { method: "DELETE", orgId }),
-  listOrgs: () => authFetch<{ orgs: OrgSummary[] }>("/api/orgs"),
+  // ADR-017 D5 — recent PR reviews (both lenses) for the Reviews dashboard.
+  listReviewJobs: (orgId?: string, limit = 30) =>
+    authFetch<{ reviews: ReviewJob[]; canRun: boolean }>(`/api/admin/reviews/jobs?limit=${limit}`, { orgId }),
+  reviewSummary: (orgId?: string, days = 30) =>
+    authFetch<ReviewSummary>(`/api/admin/reviews/summary?days=${days}`, { orgId }),
+  listReviewPrs: (orgId?: string) => authFetch<{ prs: ReviewPullRequest[]; canRun: boolean }>("/api/admin/reviews/prs", { orgId }),
+  getReviewPr: (repo: string, number: number, orgId?: string) => {
+    const [owner, name] = repo.split("/");
+    return authFetch<{ pr: ReviewPullRequestDetail; canRun: boolean }>(`/api/admin/reviews/prs/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${number}`, { orgId });
+  },
+  getReviewJob: (id: string, orgId?: string) => authFetch<{ review: ReviewJob; canRun: boolean }>(`/api/admin/reviews/jobs/${encodeURIComponent(id)}`, { orgId }),
+  runReview: (body: { repo: string; prNumber: number; lens: "security" | "code" | "pentest" | "both" }, orgId?: string) =>
+    authFetch<{ jobs: { id: string; lens: "security" | "code" | "pentest" }[] }>("/api/admin/reviews/run", { method: "POST", body, orgId }),
+  // ADR-016 — the deployment's GitHub OAuth App (for per-user "Connect GitHub").
+  getGithubOAuthApp: () =>
+    authFetch<{ configured: boolean; clientId: string; hasSecret: boolean; redirectBase: string; secretStorageReady: boolean }>("/api/admin/connectors/github/app"),
+  setGithubOAuthApp: (body: { clientId: string; clientSecret?: string; redirectBase?: string }) =>
+    authFetch<{ ok: boolean; configured: boolean; hasSecret: boolean }>("/api/admin/connectors/github/app", { method: "POST", body }),
+  // ADR-016 — per-source connector OAuth apps (GitLab / Slack / Drive / Gmail / Notion /
+  // Linear), configured in Integrations just like the GitHub OAuth App. No secrets returned.
+  getConnectorOAuthApps: (orgId?: string) =>
+    authFetch<{ apps: Array<{ source: string; configured: boolean; hasSecret: boolean; clientId: string; scopes: string; defaultScopes: string; usesPkce: boolean }> }>("/api/connectors/oauth/apps", { orgId }),
+  setConnectorOAuthApp: (source: string, body: { clientId: string; clientSecret?: string; scopes?: string }, orgId?: string) =>
+    authFetch<{ app: unknown }>(`/api/connectors/${source}/oauth/app`, { method: "POST", body, orgId }),
+  startConnectorOAuth: (source: string, connectorId?: string, orgId?: string) =>
+    authFetch<{ url: string }>(`/api/connectors/${encodeURIComponent(source)}/oauth/start${connectorId ? `?connectorId=${encodeURIComponent(connectorId)}` : ""}`, { method: "POST", orgId }),
+  connectorStatus: (source: string, orgId?: string) =>
+    authFetch<ConnectorStatus>(`/api/connectors/${encodeURIComponent(source)}/status`, { orgId }),
+  connectorResources: (source: string, orgId?: string) =>
+    authFetch<{ source: string; connected: boolean; resources: { id: string; label: string; selected: boolean; kind?: string }[] }>(`/api/connectors/${encodeURIComponent(source)}/resources`, { orgId }),
+  setConnectorResources: (source: string, resourceIds: string[], orgId?: string) =>
+    authFetch<{ connector: ConnectorStatus["connector"] }>(`/api/connectors/${encodeURIComponent(source)}/resources`, { method: "PUT", body: { resourceIds }, orgId }),
+  setConnectorSchedule: (id: string, enabled: boolean, orgId?: string) =>
+    authFetch<{ connector: ConnectorStatus["connector"] }>(`/api/connectors/${encodeURIComponent(id)}`, { method: "PATCH", body: { enabled }, orgId }),
+  runConnector: (id: string, orgId?: string) =>
+    authFetch<{ result: { ok: boolean; documents: number; imported: number; error?: string } }>(`/api/connectors/${encodeURIComponent(id)}/run`, { method: "POST", orgId }),
+  disconnectConnector: (source: string, orgId?: string) =>
+    authFetch<{ ok: boolean; connector: ConnectorStatus["connector"] }>(`/api/connectors/${encodeURIComponent(source)}/disconnect`, { method: "POST", orgId }),
+  listPentestTargets: (orgId?: string) => authFetch<{ targets: PentestTarget[] }>("/api/admin/pentests/targets", { orgId }),
+  createPentestTarget: (body: { kind: "domain" | "repository"; value: string; label?: string; authorized: true }, orgId?: string) => authFetch<{ target: PentestTarget }>("/api/admin/pentests/targets", { method: "POST", body, orgId }),
+  deletePentestTarget: (id: string, orgId?: string) => authFetch<{ ok: boolean }>(`/api/admin/pentests/targets/${encodeURIComponent(id)}`, { method: "DELETE", orgId }),
+  listPentestRuns: (orgId?: string, limit = 100) => authFetch<{ runs: PentestRun[] }>(`/api/admin/pentests/runs?limit=${limit}`, { orgId }),
+  startPentestRun: (targetId: string, scanMode: PentestScanMode = "standard", orgId?: string) => authFetch<{ run: PentestRun }>("/api/admin/pentests/runs", { method: "POST", body: { targetId, scanMode }, orgId }),
+  listOrgs: (signal?: AbortSignal) => authFetch<{ orgs: OrgSummary[] }>("/api/orgs", { signal }),
   createOrg: (name: string, plan: OrgPlan = "team") =>
     authFetch<{ org: OrgSummary }>("/api/orgs", { method: "POST", body: { name, plan } }),
   updateOrgPlan: (orgId: string, plan: OrgPlan) =>
@@ -179,6 +285,11 @@ export const adminApi = {
   removeMember: (orgId: string, userId: string) =>
     authFetch(`/api/orgs/${orgId}/members/${encodeURIComponent(userId)}`, { method: "DELETE", orgId }),
   setDefaultOrg: (orgId: string) => authFetch(`/api/orgs/${orgId}/default`, { method: "POST" }),
+  // GitHub App repo linking (RBAC: triggers:manage).
+  githubStatus: (orgId: string) =>
+    authFetch<{ configured: boolean; installed: boolean; installUrl?: string }>(`/api/orgs/${orgId}/github/status`, { orgId }),
+  githubRepos: (orgId: string) =>
+    authFetch<{ configured: boolean; installed: boolean; repos: { fullName: string; url: string; private: boolean; defaultBranch: string }[]; error?: string }>(`/api/orgs/${orgId}/github/repos`, { orgId }),
   // Invitations (ADR-014 Phase B2).
   invite: (orgId: string, email: string, role: string) =>
     authFetch<{ invite: { email: string; role: string; expiresAt: string }; delivered: boolean; link?: string }>(`/api/orgs/${orgId}/invites`, { method: "POST", body: { email, role }, orgId }),
@@ -207,8 +318,8 @@ export const adminApi = {
   unshareMemory: (recordId: string, orgId: string) =>
     authFetch(`/api/memories/${encodeURIComponent(recordId)}/unshare`, { method: "POST", body: { orgId }, orgId }),
   // Projects (ADR-014 Phase E).
-  listProjects: (orgId: string) =>
-    authFetch<{ projects: Project[] }>(`/api/orgs/${orgId}/projects`, { orgId }),
+  listProjects: (orgId: string, signal?: AbortSignal) =>
+    authFetch<{ projects: Project[] }>(`/api/orgs/${orgId}/projects`, { orgId, signal }),
   createProject: (orgId: string, body: { name: string; repoUrl?: string; restricted?: boolean }) =>
     authFetch<{ project: Project }>(`/api/orgs/${orgId}/projects`, { method: "POST", body, orgId }),
   updateProject: (orgId: string, projectId: string, patch: { name?: string; repoUrl?: string | null; restricted?: boolean }) =>

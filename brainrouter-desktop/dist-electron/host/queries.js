@@ -1,25 +1,30 @@
 import { shellQuoteArg } from '../shellQuote.js';
+import { brainRouterAccountHeaders, createGithubTrackProxyFetch, createGitlabTrackProxyFetch, fetchAccountConnectorStatuses, fetchAutomationAccountStatus, fetchGithubAccountStatus, resolveBrainRouterAccountApi, resolveBrainRouterAccountContext, resolveDesktopAccountIdentity, startAccountConnectorOAuth, } from '../accountIntegration.js';
 // host/helpers — pure, closure-free helpers (config scrubbing, Track↔GitHub
 // normalization, computer-use/secret bridges, endpoint model probing, transcript
 // row reconstruction) extracted verbatim from this file.
-import { scrubCliSecrets, normalizeTrackGithubRepos, syncLegacyTrackGithubFields, githubIntegrationSnapshot, TERM_BUF_CAP, fetchEndpointModels, matchingDefaultProvider, reconstructTranscriptRows, annotateStale, annotationFilterFromArgs, annotationAnchorFromArgs, artifactFilterFromArgs, withSessionScope, workerEventsToRows, git, sessionRows, } from './helpers.js';
-import { exec, spawn } from 'node:child_process';
+import { scrubCliSecrets, normalizeTrackGithubRepos, syncLegacyTrackGithubFields, githubIntegrationSnapshot, fetchEndpointModels, matchingDefaultProvider, reconstructTranscriptRows, annotateStale, annotationFilterFromArgs, annotationAnchorFromArgs, artifactFilterFromArgs, withSessionScope, workerEventsToRows, git, sessionRows, } from './helpers.js';
+import { exec } from 'node:child_process';
+import { ensureBrainSession, endBrainSession, setBrainSessionRelay } from './brainSession.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import QRCode from 'qrcode';
 // Deep imports into the CLI's built runtime (no "exports" field = allowed).
 // Extracting a proper @kinqs/brainrouter-agent package is tracked for 0.4.16.
 import { callOpenAI } from '@kinqs/brainrouter-core/agent';
 // UI-TEST fusion — story prompt/validation helpers + the driver step types the
 // uitest:* handlers below use. The host instance itself arrives via ctx.uitest.
-import { buildStoryPrompt, validateStories } from '@kinqs/brainrouter-ui-test/dist/index.js';
+import { buildStoryPrompt, validateStories, FlowStepSchema, DeviceSchema } from '@kinqs/brainrouter-core/uitest';
+// IPC boundary: the uitest:* channel is agent-reachable, so validate every input.
+import { isLoopbackHttpSrc } from '../webviewPolicy.js';
 import { CLI_CONFIG_SCHEMA, findConfigSchemaField, loadConfig, saveConfig, getCliKnobs, resolveCliKnobs, _resetCliKnobsCache, applyRuleEdit, setConfigValueAtPath, } from '@kinqs/brainrouter-core/config';
 import { aggregateCatalog, buildModelRegistry, getRouterPolicy } from '@kinqs/brainrouter-core/router';
 import { createRuntimeRunnerClient, listRuntimePreviewPorts, registerRuntimePreviewPort, removeRuntimePreviewPort, resolveRuntimePreviewReservations, listRuntimeRecords, removeRuntimeRecord, listArchives, resumeFromArchive, pruneArchives, } from '@kinqs/brainrouter-core/runtime';
 // 0.4.15 — named providers + per-sub-agent model routing (pure transforms).
 import { setProvider, removeProvider, setAgentModel, normalizeProviderModels, PROVIDER_CATALOG } from '@kinqs/brainrouter-core/provider';
 import { childSessionKey } from '@kinqs/brainrouter-core/mcp';
-import { listTranscripts, loadTranscript, readTranscriptTail, transcriptSizeBytes, deleteSession, forkSession, appendTranscriptEntry, rewindTranscript, readSessionMetaAll, getSessionMeta, setSessionMeta, removeSessionMeta, listSessionGroups, getSessionMode, setSessionMode, resolveActiveMode, buildRecap, readPreferences, writePreferences, searchTranscript, exportTranscriptMarkdown, exportTranscriptJson, exportFileName, listChapters, } from '@kinqs/brainrouter-core/session';
+import { listTranscripts, loadTranscript, readTranscriptTail, transcriptSizeBytes, deleteSession, forkSession, appendTranscriptEntry, rewindTranscript, readSessionMetaAll, getSessionMeta, setSessionMeta, removeSessionMeta, listSessionGroups, getSessionMode, setSessionMode, resolveActiveMode, buildRecap, readPreferences, writePreferences, searchTranscript, exportTranscriptMarkdown, exportTranscriptJson, exportFileName, listChapters, getSessionRuntime, setSessionRuntime, } from '@kinqs/brainrouter-core/session';
 import { readUsageHistory, totalUsage } from '@kinqs/brainrouter-core/usage';
 import { readWorkspaceEntry, isWorkspaceDirectory, statWorkspaceEntry, writeWorkspaceEntry } from '../fsRead.js';
 import { saveWorkflowGraph, loadWorkflowGraph, listWorkflowGraphs, deleteWorkflowGraph } from '@kinqs/brainrouter-core/workflow';
@@ -75,9 +80,10 @@ import { listRequirements, getRequirement, createRequirement, updateRequirement,
 import { buildBaseGraph, saveAtlasGraph, readAtlasGraph, atlasGraphStats, atlasWorkspaceTag, enrichAtlasGraph, carryForwardSummaries, extractAtlasJson, } from '@kinqs/brainrouter-core/atlas';
 import { syncRequirementPlanTrack } from '@kinqs/brainrouter-core/requirement';
 import { ensureProject, getProject, listWorkItems, createWorkItem, transitionWorkItem, updateWorkItem, addComment, linkWorkItem, createSprint, listSprints, setSprintState, createModule, listModules, updateModule, deleteModule, saveView, listViews, deleteView, listAutomations, createAutomation, updateAutomation, deleteAutomation, listMembers, addMember, updateMemberRole, removeMember, } from '@kinqs/brainrouter-core/track';
-import { exportToGithub, importFromGithub, syncBidirectional, importMembersFromGithub, resolveGithubConfigForWorkspace, migrateTrackGithubToConnector, setGithubSyncTarget, } from '@kinqs/brainrouter-core/track';
+import { exportToGithub, importFromGithub, syncBidirectional, importMembersFromGithub, resolveGithubConfigForWorkspace, migrateTrackGithubToConnector, setGithubSyncTarget, createGitlabTrackCompatFetch, normalizeRepoUrl, } from '@kinqs/brainrouter-core/track';
 import { scanGitCommitsForTrack } from '@kinqs/brainrouter-core/track';
 import { readGitTrackContext, startGitWorkForTrackItem } from '@kinqs/brainrouter-core/track';
+import { detectForgeProvider } from '@kinqs/brainrouter-core/forge';
 import { listConnectorCatalog } from '@kinqs/brainrouter-core/connectors';
 import { createConnector, deleteConnector, getConnector, listConnectorRuns, listConnectors, recordConnectorRun, updateConnector, } from '@kinqs/brainrouter-core/connectors';
 import { exportConnectorDefinitions, importConnectorDefinitions } from '@kinqs/brainrouter-core/connectors';
@@ -106,7 +112,7 @@ import { localToolSpecsFromExecutors, isProtectedCoreTool } from '@kinqs/brainro
 import { readRun } from '@kinqs/brainrouter-core/workflow';
 import { desktopSessionModePatchFromArgs, mergeSessionModePrefs } from '../sessionModeBridge.js';
 export function buildQueries(ctx) {
-    const { uitest, design, workspaceRoot, wsGit, fileListCache, listWorkspaceFilesCached, send, config, mcpClient, callBrainAtlas, agent, llmForSession, syncActiveSessionLlm, spawnTaskAgent, taskEventView, emitTaskEvent, taskProgress, goalStrikes, captureRequirementNote, captureAnnotationNote, captureAnnotationExportNote, captureArtifactNote, terms, modelsCacheByKey, isoNow, runReview, runReviewTask, reviewSnapshot, runPlanRevisionTask, ghText, ghJson, githubConnectorToken, githubTokenJson, readTrackPrStatus, validateGithubConnector, indexConnectorMemory, runConnector, syncConnectorPermissions, createTrackDraftPr, importTrackIssuesFromGh, mergeCurrentTrackPr, submitTrackPrReview, fixCurrentTrackPrChecks, getActiveAgent, getLlm, setLlm, getPrCache, setPrCache, getPrStatusMapCache, setPrStatusMapCache, nextTermSeq, resetGhEnvCache, } = ctx;
+    const { uitest, design, workspaceRoot, wsGit, fileListCache, listWorkspaceFilesCached, send, config, mcpClient, callBrainAtlas, agent, llmForSession, syncActiveSessionLlm, spawnTaskAgent, taskEventView, emitTaskEvent, taskProgress, goalStrikes, captureRequirementNote, captureAnnotationNote, captureAnnotationExportNote, captureArtifactNote, ptyRegistry, hostedAgents, fanoutManager, remoteWorktrees, mobileRelay, modelsCacheByKey, isoNow, runReview, runReviewTask, reviewSnapshot, runPlanRevisionTask, ghText, ghJson, githubConnectorToken, githubTokenJson, readTrackPrStatus, validateGithubConnector, indexConnectorMemory, runConnector, syncConnectorPermissions, createTrackDraftPr, importTrackIssuesFromGh, mergeCurrentTrackPr, submitTrackPrReview, fixCurrentTrackPrChecks, getActiveAgent, getLlm, setLlm, getPrCache, setPrCache, getPrStatusMapCache, setPrStatusMapCache, resetGhEnvCache, } = ctx;
     let runtimeRunnerClient = null;
     let runtimeRunnerRemoteUrl = '';
     const getRuntimeRunnerClient = () => {
@@ -124,6 +130,37 @@ export function buildQueries(ctx) {
             });
         }
         return runtimeRunnerClient;
+    };
+    const resolveGitlabTrackContext = async () => {
+        const gitContext = readGitTrackContext(workspaceRoot);
+        const remote = wsGit.remoteUrl ?? gitContext.remotes[0]?.url ?? '';
+        if (detectForgeProvider(remote)?.id !== 'gitlab')
+            return null;
+        const normalized = normalizeRepoUrl(remote);
+        const slash = normalized.indexOf('/');
+        if (slash <= 0 || slash === normalized.length - 1)
+            return null;
+        const host = normalized.slice(0, slash);
+        const repo = normalized.slice(slash + 1);
+        const config = loadConfig();
+        const status = await fetchAccountConnectorStatuses(config, ['gitlab']);
+        const connector = status.connectors.find((entry) => entry.source === 'gitlab');
+        const accountApi = resolveBrainRouterAccountApi(config);
+        const oauth = connector?.connected && accountApi && status.orgId
+            ? { ...accountApi, orgId: status.orgId, ...(status.orgName ? { orgName: status.orgName } : {}) }
+            : null;
+        return {
+            provider: 'gitlab',
+            repo,
+            apiBase: `https://${host}/api/v4`,
+            oauth,
+            account: {
+                signedIn: status.signedIn,
+                connected: connector?.connected === true,
+                ...(connector?.account ? { login: connector.account } : {}),
+                ...(connector?.error || status.error ? { error: connector?.error ?? status.error } : {}),
+            },
+        };
     };
     return {
         // Read-only surfaces — same pure modules the TUI commands use.
@@ -201,6 +238,57 @@ export function buildQueries(ctx) {
             const source = typeof args.source === 'string' ? args.source : undefined;
             const status = typeof args.status === 'string' ? args.status : undefined;
             return { connectors: listConnectors(workspaceRoot, { source, status }) };
+        },
+        // ADR-016 C5 — migrate this workspace's LOCAL connectors to the signed-in
+        // backend (server-only model). Pushes the non-secret definition of each local
+        // connector to POST /api/connectors; credentials are NOT shipped — the user
+        // re-authorizes each source through the server OAuth broker. The local copy is
+        // kept as a fallback until the server sync is confirmed.
+        'action:migrate-connectors': async () => {
+            const cfg = loadConfig();
+            const signedIn = resolveBrainRouterAccountApi(cfg);
+            if (!signedIn)
+                return { ok: false, error: 'Sign in to BrainRouter first (Settings → Account).' };
+            let account;
+            try {
+                account = await resolveBrainRouterAccountContext(cfg);
+            }
+            catch (error) {
+                return { ok: false, error: error instanceof Error ? error.message : 'No active BrainRouter organization.' };
+            }
+            if (!account)
+                return { ok: false, error: 'No active BrainRouter organization.' };
+            let local = [];
+            try {
+                local = listConnectors(workspaceRoot);
+            }
+            catch {
+                local = [];
+            }
+            // Never ship secret-ish fields — the server re-authorizes each source through the
+            // OAuth broker, so only the NON-secret definition migrates (CWE-200). This makes
+            // the "credentials are not shipped" guarantee true in code, not just the comment.
+            const SECRET_KEY_RE = /(token|secret|password|passphrase|apikey|api[_-]?key|credential|refresh|client[_-]?secret|private[_-]?key)/i;
+            const stripSecrets = (o) => Object.fromEntries(Object.entries(o ?? {}).filter(([k]) => !SECRET_KEY_RE.test(k)));
+            let migrated = 0;
+            const failed = [];
+            for (const c of local) {
+                try {
+                    const res = await fetch(`${account.baseUrl}/api/connectors`, {
+                        method: 'POST',
+                        headers: brainRouterAccountHeaders(account, true),
+                        body: JSON.stringify({ source: c.source, name: c.name, config: stripSecrets(c.config) }),
+                    });
+                    if (res.ok)
+                        migrated++;
+                    else
+                        failed.push(`${c.source}: HTTP ${res.status}`);
+                }
+                catch (e) {
+                    failed.push(`${c.source}: ${e instanceof Error ? e.message : 'error'}`);
+                }
+            }
+            return { ok: true, total: local.length, migrated, failed, note: 'Reconnect each source in Settings to re-authorize — credentials are re-entered through the server, never shipped from the desktop.' };
         },
         'connector-detail': (args) => {
             const id = typeof args.id === 'string' ? args.id : '';
@@ -600,7 +688,15 @@ export function buildQueries(ctx) {
         // UI back to the old model right after a switch.
         'session-info': () => {
             const current = syncActiveSessionLlm();
-            return { sessionKey: getActiveAgent().sessionKey, model: getActiveAgent().getModel?.() ?? current.model, workspaceRoot, username: os.userInfo().username };
+            const identity = resolveDesktopAccountIdentity(loadConfig(), os.userInfo().username);
+            return {
+                sessionKey: getActiveAgent().sessionKey,
+                model: getActiveAgent().getModel?.() ?? current.model,
+                workspaceRoot,
+                username: identity.username,
+                accountSignedIn: identity.signedIn,
+                accountEmail: identity.email,
+            };
         },
         // DESK-4d — the home/greeting view: real numbers from the workspace's
         // persisted transcripts (sessions, messages, active days, streaks, and
@@ -820,6 +916,9 @@ export function buildQueries(ctx) {
             const base = {
                 repo: wsGit.repoName, workspaceRoot, gitRoot: wsGit.gitRoot,
                 repoRelativePath: wsGit.repoRelativePath, isSubdir: wsGit.isSubdir,
+                // ADR-015 — the repo identity used to MATCH this workspace to a linked
+                // GitHub repo (survives http↔ssh remotes / a moved folder / a 2nd clone).
+                remoteUrl: wsGit.remoteUrl, repoIdentity: wsGit.repoIdentity, repoTag: wsGit.repoTag,
             };
             const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], workspaceRoot)).trim();
             if (!branch)
@@ -1053,23 +1152,76 @@ export function buildQueries(ctx) {
         // Pull repo collaborators into the roster (role-mapped). Token resolved
         // server-side; never returned to the renderer.
         'track-sync-members': async (a) => {
+            const gitlab = await resolveGitlabTrackContext();
+            const failure = (message) => ({ members: listMembers(workspaceRoot), added: [], errors: [message] });
+            if (gitlab) {
+                if (!gitlab.oauth)
+                    return failure('Connect GitLab in Settings → Connections → Connectors.');
+                const fetchImpl = createGitlabTrackCompatFetch({
+                    apiBase: gitlab.apiBase,
+                    token: 'via-oauth-broker',
+                    authMode: 'bearer',
+                    fetchImpl: createGitlabTrackProxyFetch(gitlab.oauth),
+                });
+                return await importMembersFromGithub(workspaceRoot, {
+                    repo: gitlab.repo,
+                    token: 'via-oauth-broker',
+                    fetchImpl,
+                    dryRun: a.dryRun === true,
+                });
+            }
             migrateTrackGithubToConnector(workspaceRoot);
             const cfg = resolveGithubConfigForWorkspace(workspaceRoot, typeof a.repo === 'string' ? a.repo : undefined);
-            if (cfg.error)
-                return { error: cfg.error };
-            if (!cfg.repo)
-                return { error: 'No repository configured. Configure a GitHub connector in Settings → Connectors → GitHub.' };
+            const config = loadConfig();
+            const accountApi = resolveBrainRouterAccountApi(config);
+            const accountStatus = await fetchGithubAccountStatus(config);
+            const oauth = accountApi && accountStatus.connected && accountStatus.orgId
+                ? { ...accountApi, orgId: accountStatus.orgId, ...(accountStatus.orgName ? { orgName: accountStatus.orgName } : {}) }
+                : null;
+            const repo = cfg.repo || (oauth ? readGitTrackContext(workspaceRoot).githubRepo ?? '' : '');
+            if (!oauth && cfg.error)
+                return failure(cfg.error);
+            if (!repo)
+                return failure('No GitHub repository detected or configured for this workspace.');
+            if (oauth) {
+                return await importMembersFromGithub(workspaceRoot, {
+                    repo,
+                    token: 'via-oauth-broker',
+                    fetchImpl: createGithubTrackProxyFetch(oauth),
+                    dryRun: a.dryRun === true,
+                });
+            }
             if (!cfg.token)
-                return { error: 'No token. Add one to the GitHub connector in Settings → Connectors, or set GITHUB_TOKEN/GH_TOKEN.' };
-            return await importMembersFromGithub(workspaceRoot, { repo: cfg.repo, token: cfg.token, fetchImpl: fetch, dryRun: a.dryRun === true });
+                return failure('Connect GitHub in Settings → Connections → Connectors, or set a local GitHub credential.');
+            return await importMembersFromGithub(workspaceRoot, { repo, token: cfg.token, fetchImpl: fetch, dryRun: a.dryRun === true });
         },
         // External sync — GitHub Issues. The token is resolved server-side from
         // config.json/env and NEVER returned to the renderer. The lazy migration
         // adopts any legacy cli.track.github* config into the workspace's
         // connector the first time the Sync surface is opened (idempotent).
-        'track-sync-config': () => {
+        'track-sync-config': async () => {
+            const gitlab = await resolveGitlabTrackContext();
+            if (gitlab) {
+                return {
+                    provider: gitlab.provider,
+                    repo: null,
+                    hasToken: false,
+                    tokenSource: null,
+                    repos: [],
+                    detectedRepo: gitlab.repo,
+                    account: gitlab.account,
+                };
+            }
             migrateTrackGithubToConnector(workspaceRoot);
-            return githubIntegrationSnapshot(workspaceRoot);
+            const local = githubIntegrationSnapshot(workspaceRoot);
+            const gitContext = readGitTrackContext(workspaceRoot);
+            const account = await fetchGithubAccountStatus(loadConfig());
+            return {
+                ...local,
+                provider: 'github',
+                detectedRepo: gitContext.githubRepo ?? null,
+                account,
+            };
         },
         // Connector Phase 0 — choose which (connector, repo) this workspace syncs
         // with. `null`/missing connectorId clears the target (back to legacy).
@@ -1177,20 +1329,63 @@ export function buildQueries(ctx) {
         'track-sync': async (a) => {
             const direction = a.direction === 'export' ? 'export' : a.direction === 'sync' ? 'sync' : 'import';
             const dryRun = a.dryRun !== false; // default to dry-run unless explicitly false
+            // Return the board from the same completion boundary as the network
+            // operation. The renderer used to guess with a 600 ms timer, which often
+            // refreshed before GitHub finished and made a successful sync look inert.
+            const withItems = (result) => ({ ...result, items: listWorkItems(workspaceRoot) });
+            const failure = (message) => withItems({ direction, dryRun, errors: [message] });
+            const gitlab = await resolveGitlabTrackContext();
+            if (gitlab) {
+                if (!gitlab.oauth)
+                    return failure('Connect GitLab in Settings → Connections → Connectors.');
+                const fetchImpl = createGitlabTrackCompatFetch({
+                    apiBase: gitlab.apiBase,
+                    token: 'via-oauth-broker',
+                    authMode: 'bearer',
+                    fetchImpl: createGitlabTrackProxyFetch(gitlab.oauth),
+                });
+                const opts = { repo: gitlab.repo, token: 'via-oauth-broker', fetchImpl, dryRun };
+                if (direction === 'export')
+                    return withItems(await exportToGithub(workspaceRoot, opts));
+                if (direction === 'sync')
+                    return withItems(await syncBidirectional(workspaceRoot, opts));
+                return withItems(await importFromGithub(workspaceRoot, opts));
+            }
             migrateTrackGithubToConnector(workspaceRoot);
             const cfg = resolveGithubConfigForWorkspace(workspaceRoot, typeof a.repo === 'string' ? a.repo : undefined);
-            if (cfg.error)
-                return { error: cfg.error };
-            if (!cfg.repo)
-                return { error: 'No repository configured. Configure a GitHub connector in Settings → Connectors → GitHub.' };
+            // OAuth-first (ADR-016): when GitHub is connected to the signed-in BrainRouter
+            // account, Track's GitHub REST calls are proxied through the sealed server-side
+            // token (no PAT on this machine) and the repo is auto-detected from the
+            // workspace's git remote. Falls back to the legacy PAT/gh path otherwise.
+            const config = loadConfig();
+            const accountApi = resolveBrainRouterAccountApi(config);
+            const accountStatus = await fetchGithubAccountStatus(config);
+            const oauth = accountApi && accountStatus.connected && accountStatus.orgId
+                ? { ...accountApi, orgId: accountStatus.orgId, ...(accountStatus.orgName ? { orgName: accountStatus.orgName } : {}) }
+                : null;
+            if (!oauth && cfg.error)
+                return failure(cfg.error);
+            const repo = cfg.repo || (oauth ? readGitTrackContext(workspaceRoot).githubRepo ?? '' : '');
+            if (!repo)
+                return failure(oauth
+                    ? 'No GitHub repository detected for this workspace — open a folder with a GitHub remote.'
+                    : 'No repository configured. Configure a GitHub connector in Settings → Connectors → GitHub.');
+            if (oauth) {
+                const opts = { repo, token: 'via-oauth-broker', fetchImpl: createGithubTrackProxyFetch(oauth), dryRun };
+                if (direction === 'export')
+                    return withItems(await exportToGithub(workspaceRoot, opts));
+                if (direction === 'sync')
+                    return withItems(await syncBidirectional(workspaceRoot, opts));
+                return withItems(await importFromGithub(workspaceRoot, opts));
+            }
             if (!cfg.token)
-                return { error: 'No token. Add one to the GitHub connector in Settings → Connectors, or set GITHUB_TOKEN/GH_TOKEN.' };
-            const opts = { repo: cfg.repo, token: cfg.token, fetchImpl: fetch, dryRun };
+                return failure('Connect GitHub in Settings → Connectors → GitHub (recommended), or add a token / set GITHUB_TOKEN.');
+            const opts = { repo, token: cfg.token, fetchImpl: fetch, dryRun };
             if (direction === 'export')
-                return await exportToGithub(workspaceRoot, opts);
+                return withItems(await exportToGithub(workspaceRoot, opts));
             if (direction === 'sync')
-                return await syncBidirectional(workspaceRoot, opts);
-            return await importFromGithub(workspaceRoot, opts);
+                return withItems(await syncBidirectional(workspaceRoot, opts));
+            return withItems(await importFromGithub(workspaceRoot, opts));
         },
         // links). Thin wrappers over the CLI's requirementStore (already unit-tested)
         // so the desktop panel and the terminal CLI share the same requirements.json.
@@ -2859,75 +3054,101 @@ export function buildQueries(ctx) {
             const reason = error ? 'unreachable' : (typeof status === 'number' && status >= 400 ? `http-${status}` : undefined);
             return { models, count: models.length, provider: provId || null, probe: true, ...(reason ? { error: reason } : {}) };
         },
-        // DESK-5c — real terminal sessions (offset-poll streaming).
-        'term-open': () => {
-            const id = `t${nextTermSeq()}`;
-            const isWin = process.platform === 'win32';
-            const shell = isWin ? 'powershell.exe' : (process.env.SHELL || '/bin/zsh');
-            const args = isWin ? ['-NoLogo'] : ['-i'];
-            const proc = spawn(shell, args, {
-                cwd: workspaceRoot,
-                env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' },
-            });
-            const sess = { proc, buf: '', alive: true };
-            const append = (d) => {
-                sess.buf += typeof d === 'string' ? d : d.toString('utf-8');
-                if (sess.buf.length > TERM_BUF_CAP)
-                    sess.buf = sess.buf.slice(-TERM_BUF_CAP);
-            };
-            // CRITICAL — a spawn failure (shell missing, EACCES) is emitted as an
-            // ASYNC 'error' event AFTER this handler returns. With no listener Node
-            // treats it as an unhandled error and crashes the whole host process,
-            // which takes down `npm start`. Catch it: mark the session dead and put
-            // the reason in the buffer so the panel shows an error, not a blank hang.
-            proc.on('error', (err) => {
-                sess.alive = false;
-                append(`\r\n[terminal failed to start ${shell}: ${err instanceof Error ? err.message : String(err)}]\r\n`);
-            });
-            proc.stdout.on('data', append);
-            proc.stderr.on('data', append);
-            // A bare stream 'error' (e.g. EPIPE when the shell dies mid-write) also
-            // throws if unlistened — swallow it; `exit`/`error` above own recovery.
-            proc.stdin.on('error', () => { sess.alive = false; });
-            proc.stdout.on('error', () => { });
-            proc.stderr.on('error', () => { });
-            proc.on('exit', (code) => { sess.alive = false; append(`\r\n[shell exited ${code ?? '?'}]\r\n`); });
-            terms.set(id, sess);
-            return { id, shell };
-        },
+        // A true pseudo-terminal: interactive programs see a TTY, resize reaches
+        // the child process, and a host-owned bounded snapshot survives panel
+        // remounts without writing terminal contents to disk.
+        'term-open': (args) => ptyRegistry.open({
+            cols: Number(args.cols) || undefined,
+            rows: Number(args.rows) || undefined,
+            reuseKey: typeof args.reuseKey === 'string' ? args.reuseKey : undefined,
+        }),
         'term-write': (args) => {
-            const sess = terms.get(String(args.id));
-            if (!sess?.alive)
-                return { ok: false };
-            // Guard stdin.write — writing to a shell that just died raises EPIPE,
-            // which (unguarded) would crash the host the same way the spawn error did.
-            try {
-                sess.proc.stdin.write(String(args.data ?? ''));
-            }
-            catch {
-                sess.alive = false;
-                return { ok: false };
-            }
-            return { ok: true };
+            return { ok: ptyRegistry.write(String(args.id), String(args.data ?? '')) };
         },
-        'term-read': (args) => {
-            const sess = terms.get(String(args.id));
-            if (!sess)
-                return { chunk: '', next: 0, alive: false };
-            const from = Math.max(0, Math.min(Number(args.from) || 0, sess.buf.length));
-            return { chunk: sess.buf.slice(from), next: sess.buf.length, alive: sess.alive };
+        'term-read': (args) => ptyRegistry.read(String(args.id), Number(args.from) || 0),
+        'term-resize': (args) => ({ ok: ptyRegistry.resize(String(args.id), Number(args.cols), Number(args.rows)) }),
+        'term-kill': (args) => ({ ok: ptyRegistry.kill(String(args.id)) }),
+        'hosted-agent-catalog': () => {
+            const sessionKey = getActiveAgent().sessionKey;
+            return { adapters: hostedAgents.catalog(), selected: getSessionRuntime(workspaceRoot, sessionKey).agentAdapter ?? 'brainrouter' };
         },
-        'term-kill': (args) => {
-            const sess = terms.get(String(args.id));
-            if (sess) {
-                try {
-                    sess.proc.kill();
-                }
-                catch { /* already gone */ }
-                terms.delete(String(args.id));
-            }
-            return { ok: true };
+        'hosted-agent-start': (args) => {
+            const sessionKey = getActiveAgent().sessionKey;
+            const adapterId = String(args.adapterId ?? getSessionRuntime(workspaceRoot, sessionKey).agentAdapter ?? 'brainrouter');
+            setSessionRuntime(workspaceRoot, sessionKey, { agentAdapter: adapterId });
+            return hostedAgents.start({
+                sessionKey, adapterId,
+                prompt: typeof args.prompt === 'string' ? args.prompt : undefined,
+                resumeSessionId: typeof args.resumeSessionId === 'string' ? args.resumeSessionId : undefined,
+                trusted: args.trusted === true,
+                cols: Number(args.cols) || undefined,
+                rows: Number(args.rows) || undefined,
+            });
         },
+        'hosted-agent-attach': () => hostedAgents.attach(getActiveAgent().sessionKey),
+        'hosted-agent-status': () => hostedAgents.refresh(getActiveAgent().sessionKey),
+        'hosted-agent-control': (args) => ({
+            ok: hostedAgents.control(getActiveAgent().sessionKey, args.action === 'interrupt' || args.action === 'approve' ? args.action : 'follow-up', typeof args.text === 'string' ? args.text : undefined),
+        }),
+        'hosted-agent-setup': (args) => hostedAgents.setup(String(args.adapterId ?? '')),
+        'ssh-host-list': () => remoteWorktrees.registry.list(),
+        'ssh-host-discover-key': async (args) => ({
+            fingerprint: await remoteWorktrees.transport.discoverHostKey({
+                host: String(args.host ?? ''),
+                port: Number(args.port) || 22,
+                username: String(args.username ?? ''),
+            }),
+        }),
+        'ssh-host-save': (args) => remoteWorktrees.registry.put({
+            id: typeof args.id === 'string' ? args.id : undefined,
+            label: typeof args.label === 'string' ? args.label : undefined,
+            host: String(args.host ?? ''),
+            port: Number(args.port) || 22,
+            username: String(args.username ?? ''),
+            workspaceRoot: String(args.workspaceRoot ?? ''),
+            hostKeySha256: String(args.hostKeySha256 ?? ''),
+        }),
+        'ssh-host-test': (args) => remoteWorktrees.test(String(args.id ?? '')),
+        'ssh-host-remove': (args) => ({ ok: remoteWorktrees.registry.remove(String(args.id ?? '')) }),
+        'fanout-list': () => fanoutManager.list(),
+        'fanout-start': (args) => fanoutManager.start({
+            task: String(args.task ?? ''),
+            adapterIds: Array.isArray(args.adapterIds) ? args.adapterIds.map(String) : [],
+            baseRef: typeof args.baseRef === 'string' ? args.baseRef : undefined,
+            trusted: args.trusted === true,
+            executionHostId: typeof args.executionHostId === 'string' ? args.executionHostId : 'local',
+            sessionKey: getActiveAgent().sessionKey,
+        }),
+        'fanout-rank': (args) => fanoutManager.rank(String(args.runId ?? '')),
+        'fanout-promote': (args) => fanoutManager.promote(String(args.runId ?? ''), String(args.candidateId ?? ''), args.mode === 'pr' ? 'pr' : 'merge'),
+        'fanout-cleanup': (args) => fanoutManager.cleanup(String(args.runId ?? ''), String(args.candidateId ?? '')),
+        'fanout-terminal': (args) => fanoutManager.attach(String(args.candidateId ?? '')),
+        'fanout-control': (args) => ({
+            ok: fanoutManager.control(String(args.candidateId ?? ''), args.action === 'interrupt' || args.action === 'approve' ? args.action : 'follow-up', typeof args.text === 'string' ? args.text : undefined),
+        }),
+        'mobile-relay-status': () => mobileRelay.status(),
+        'mobile-relay-start': async (args) => {
+            const status = await mobileRelay.start({ lan: args.lan === true, port: Number(args.port) || 0 });
+            // Publish the relay into this desktop's active session so a same-account
+            // device discovers it via GET /api/sessions — no manual QR needed.
+            setBrainSessionRelay({ endpoints: status.endpoints, publicKey: status.publicKey });
+            await ensureBrainSession(mcpClient, workspaceRoot);
+            return status;
+        },
+        'mobile-relay-stop': async () => {
+            mobileRelay.stop();
+            setBrainSessionRelay(null);
+            await ensureBrainSession(mcpClient, workspaceRoot);
+            return mobileRelay.status();
+        },
+        'mobile-relay-pairing': async (args) => {
+            const scopes = Array.isArray(args.scopes) ? args.scopes.map(String).filter((scope) => ['monitor', 'control', 'approve'].includes(scope)) : ['monitor', 'control'];
+            const payload = mobileRelay.createPairing(scopes);
+            const encoded = JSON.stringify(payload);
+            const qrDataUrl = await QRCode.toDataURL(encoded, { errorCorrectionLevel: 'M', margin: 1, width: 280 });
+            return { payload, qrDataUrl };
+        },
+        'mobile-relay-revoke': (args) => ({ ok: mobileRelay.revoke(String(args.deviceId ?? '')) }),
         // WS2 2.4 / WS6 6.3 — stop a background shell (e.g. a dev server an agent
         // started) from the Background-tasks panel. Kills the whole process group.
         'action:kill-bgshell': (args) => ({ ok: killBackgroundShell(String(args.id ?? '')) }),
@@ -2944,17 +3165,44 @@ export function buildQueries(ctx) {
             }
         },
         'uitest:manifest': () => uitest.manifest(),
-        'uitest:set-url': (args) => uitest.setUrl(typeof args.url === 'string' ? args.url : ''),
-        'uitest:run-command': async (args) => {
-            const step = args.step;
-            if (!step || typeof step.action !== 'string' || typeof step.target !== 'string') {
-                return { result: null, error: 'invalid UI-test step' };
+        'uitest:set-url': (args) => {
+            const url = typeof args.url === 'string' ? args.url.trim() : '';
+            // Only a LOOPBACK http(s) URL may be loaded into the webview. An empty
+            // string clears the base; reject javascript:/data:/remote schemes an
+            // agent could otherwise get loaded via a later story run.
+            if (url && !isLoopbackHttpSrc(url)) {
+                return { ok: false, url: '', error: 'Only loopback http(s) URLs are allowed (localhost / 127.0.0.1 / [::1]).' };
             }
-            return uitest.runCommand(step);
+            return uitest.setUrl(url);
         },
-        'uitest:set-device': async (args) => uitest.setDevice(args.device),
+        'uitest:run-command': async (args) => {
+            // Validate against the step schema — action ∈ {navigate,tap,type,assertVisible}
+            // and `type` requires text. An agent must not drive an unknown action.
+            const parsed = FlowStepSchema.safeParse(args.step);
+            if (!parsed.success)
+                return { result: null, error: 'invalid UI-test step (unknown action or missing field)' };
+            return uitest.runCommand(parsed.data);
+        },
+        'uitest:set-device': async (args) => {
+            const parsed = DeviceSchema.safeParse(args.device);
+            if (!parsed.success)
+                return { result: null, error: 'invalid device (need a valid name + numeric width/height)' };
+            return uitest.setDevice(parsed.data);
+        },
         'uitest:list-flows': () => uitest.listFlows(),
-        'uitest:save-flow': (args) => uitest.saveFlow(typeof args.name === 'string' ? args.name : 'flow', Array.isArray(args.steps) ? args.steps : []),
+        'uitest:save-flow': (args) => {
+            // Validate every step against the schema before it's written to YAML —
+            // an agent must not persist malformed/unexpected step structures.
+            const raw = Array.isArray(args.steps) ? args.steps : [];
+            const steps = [];
+            for (const s of raw) {
+                const p = FlowStepSchema.safeParse(s);
+                if (!p.success)
+                    return { ok: false, name: typeof args.name === 'string' ? args.name : 'flow', error: 'one or more flow steps are invalid (unknown action or missing field)' };
+                steps.push(p.data);
+            }
+            return uitest.saveFlow(typeof args.name === 'string' ? args.name : 'flow', steps);
+        },
         'uitest:run-flow': async (args) => uitest.runFlow({
             name: typeof args.name === 'string' ? args.name : undefined,
             steps: Array.isArray(args.steps) ? args.steps : undefined,
@@ -2962,7 +3210,17 @@ export function buildQueries(ctx) {
         // UI STORIES — named user journeys: list/save on disk, LLM-suggest from the
         // current screen map, and ensure the app is hosted before a run.
         'uitest:list-stories': () => uitest.listStories(),
-        'uitest:save-story': (args) => uitest.saveStory(args.story),
+        'uitest:save-story': (args) => {
+            // Agent-supplied stories pass the SAME validation as LLM-suggested ones:
+            // every target must exist in the current map, ≥2 valid steps, and titled.
+            const manifest = uitest.manifest().manifest;
+            if (!manifest)
+                return { ok: false, error: 'No screen map yet — extract one before saving a story.' };
+            const [story] = validateStories(args.story ? [args.story] : [], manifest);
+            if (!story)
+                return { ok: false, error: 'story failed validation (unknown targets, fewer than 2 valid steps, or missing title).' };
+            return uitest.saveStory(story);
+        },
         'uitest:suggest-stories': async () => {
             try {
                 const manifest = uitest.manifest().manifest;
@@ -3216,6 +3474,414 @@ export function buildQueries(ctx) {
                 saveConfig(fresh);
             }
             return { ok: true, id };
+        },
+        // ADR-016 C0 — sign in to a BrainRouter backend and point the active brain
+        // at it over HTTP with the returned per-user apiKey, so memory becomes
+        // backend-backed (the same MCP plane the CLI/dashboard use). The apiKey lives
+        // in the brain server profile like any other MCP key; the previous (embedded)
+        // profile is stashed under cli.account so sign-out restores it non-destructively.
+        'action:auth-signin': async (args) => {
+            const email = String(args.email ?? '').trim();
+            const password = String(args.password ?? '');
+            // The backend URL is OURS — a single build-time constant (override via the
+            // BRAINROUTER_URL env / a self-built binary). Not a user-facing field, so
+            // signing in stays simple: email + password.
+            const baseUrl = (process.env.BRAINROUTER_URL ?? 'http://localhost:3747').replace(/\/+$/, '');
+            if (!email || !password)
+                return { ok: false, error: 'Email and password are required.' };
+            let res;
+            try {
+                res = await fetch(`${baseUrl}/api/auth/signin`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password }),
+                });
+            }
+            catch {
+                return { ok: false, error: `Cannot reach BrainRouter at ${baseUrl}.` };
+            }
+            if (!res.ok) {
+                let msg = `Sign-in failed (HTTP ${res.status})`;
+                try {
+                    const j = await res.json();
+                    if (j?.error)
+                        msg = j.error;
+                }
+                catch { /* keep default */ }
+                return { ok: false, error: msg };
+            }
+            const data = await res.json();
+            const apiKey = String(data.apiKey ?? '').trim();
+            if (!apiKey)
+                return { ok: false, error: 'Sign-in succeeded but returned no API key.' };
+            const isBrain = (id, s) => s?.identity === 'brainrouter' || /^brainrouter/i.test(id);
+            const fresh = loadConfig();
+            fresh.servers = fresh.servers ?? {};
+            const brainId = Object.keys(fresh.servers).find((id) => isBrain(id, fresh.servers[id])) ?? 'brainrouter';
+            const prevBrain = fresh.servers[brainId] ?? null;
+            const mcpUrl = `${baseUrl}/mcp`;
+            const account = { url: baseUrl, mcpUrl, userId: data.userId ?? '', displayName: data.displayName ?? email, email: data.email ?? email };
+            fresh.servers[brainId] = { type: 'http', url: mcpUrl, apiKey, identity: 'brainrouter' };
+            fresh.cli = fresh.cli ?? {};
+            fresh.cli.brainUrl = mcpUrl;
+            // jwt + refreshToken stay host-side (not returned to the renderer) — used only
+            // for account management like "log out of all devices" (rotate-key needs a jwt).
+            fresh.cli.account = { ...account, prevBrain, jwt: String(data.jwt ?? ''), refreshToken: String(data.refreshToken ?? '') };
+            saveConfig(fresh);
+            _resetCliKnobsCache();
+            try {
+                await mcpClient.disconnectOne(brainId);
+            }
+            catch { /* not connected */ }
+            try {
+                await mcpClient.connectOne(brainId, fresh.servers[brainId], loadConfig().llm ?? getLlm(), 5_000);
+            }
+            catch {
+                return { ok: false, error: `Signed in, but couldn't reach the brain at ${mcpUrl}. Is the backend running?` };
+            }
+            void ensureBrainSession(mcpClient, workspaceRoot); // show this device on the Account page
+            return { ok: true, account };
+        },
+        'action:auth-signout': async () => {
+            const isBrain = (id, s) => s?.identity === 'brainrouter' || /^brainrouter/i.test(id);
+            const fresh = loadConfig();
+            const prevBrain = fresh.cli?.account?.prevBrain ?? null;
+            const brainId = fresh.servers ? Object.keys(fresh.servers).find((id) => isBrain(id, fresh.servers[id])) : undefined;
+            if (brainId && fresh.servers) {
+                if (prevBrain)
+                    fresh.servers[brainId] = prevBrain;
+                else
+                    delete fresh.servers[brainId];
+            }
+            if (fresh.cli) {
+                delete fresh.cli.brainUrl;
+                delete fresh.cli.account;
+            }
+            saveConfig(fresh);
+            void endBrainSession(mcpClient);
+            _resetCliKnobsCache();
+            try {
+                if (brainId)
+                    await mcpClient.disconnectOne(brainId);
+            }
+            catch { /* already gone */ }
+            try {
+                if (brainId && fresh.servers?.[brainId])
+                    await mcpClient.connectOne(brainId, fresh.servers[brainId], loadConfig().llm ?? getLlm(), 5_000);
+            }
+            catch { /* embedded brain reconnects on next boot */ }
+            return { ok: true };
+        },
+        'auth-status': () => {
+            const account = loadConfig().cli?.account;
+            return account
+                ? { signedIn: true, account: { url: account.url ?? '', userId: account.userId ?? '', displayName: account.displayName ?? '', email: account.email ?? '' } }
+                : { signedIn: false, account: null };
+        },
+        // Account overview — the org id + the account's active sessions/devices, read
+        // from the backend with the signed-in apiKey (both endpoints are requireAnyAuth).
+        'account-overview': async () => {
+            const cfg = loadConfig();
+            const base = String(cfg.cli?.account?.url ?? '').replace(/\/+$/, '');
+            const bId = Object.keys(cfg.servers ?? {}).find((k) => (cfg.servers[k]?.identity === 'brainrouter') || /^brainrouter/i.test(k));
+            const apiKey = bId ? String(cfg.servers[bId]?.apiKey ?? '') : '';
+            if (!base || !apiKey)
+                return { signedIn: false, sessions: [] };
+            const h = { Authorization: `Bearer ${apiKey}` };
+            const out = { signedIn: true, sessions: [] };
+            try {
+                const r = await fetch(`${base}/api/orgs`, { headers: h });
+                if (r.ok) {
+                    const j = await r.json();
+                    const org = (j.orgs ?? []).find((o) => o.isDefault) ?? (j.orgs ?? [])[0];
+                    if (org) {
+                        out.orgId = org.orgId;
+                        out.orgName = org.name;
+                        out.plan = org.plan;
+                        out.role = org.role;
+                    }
+                }
+            }
+            catch { /* org id optional */ }
+            try {
+                const r = await fetch(`${base}/api/sessions?includeStale=true`, { headers: h });
+                if (r.ok) {
+                    const j = await r.json();
+                    out.sessions = (j.sessions ?? []).map((s) => ({ clientKind: s.clientKind ?? 'unknown', workspaceRoot: s.workspaceRoot, startedAt: s.startedAt, lastHeartbeatAt: s.lastHeartbeatAt }));
+                }
+            }
+            catch { /* sessions optional */ }
+            return out;
+        },
+        // ADR-017 D5 — recent PR reviews the bot ran (for the desktop PR Reviews panel),
+        // read with the signed-in apiKey (the backend enforces reviews:read).
+        'automation-account-status': async () => fetchAutomationAccountStatus(loadConfig()),
+        'reviews': async () => {
+            const config = loadConfig();
+            if (!resolveBrainRouterAccountApi(config))
+                return { signedIn: false, canRun: false, reviews: [] };
+            try {
+                const account = await resolveBrainRouterAccountContext(config);
+                if (!account)
+                    return { signedIn: true, canRun: false, reviews: [], error: 'No active BrainRouter organization.' };
+                const r = await fetch(`${account.baseUrl}/api/admin/reviews/jobs?limit=40`, {
+                    headers: brainRouterAccountHeaders(account),
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok)
+                    return { signedIn: true, canRun: false, reviews: [], error: j.error || `HTTP ${r.status}` };
+                return { signedIn: true, canRun: j.canRun === true, reviews: Array.isArray(j.reviews) ? j.reviews : [] };
+            }
+            catch (e) {
+                return { signedIn: true, canRun: false, reviews: [], error: e instanceof Error ? e.message : 'fetch failed' };
+            }
+        },
+        // Run a review on demand from the desktop (Dashboard → Reviews parity). POSTs to
+        // the org's /run endpoint with the signed-in account key; the BACKEND re-gates on
+        // the reviews:run capability + the repo being linked, and dedups an in-flight job —
+        // the desktop is just a trigger, it grants no authority the account doesn't have.
+        'reviews-run': async (a) => {
+            const config = loadConfig();
+            if (!resolveBrainRouterAccountApi(config))
+                return { ok: false, error: 'Sign in under Settings → Account first.' };
+            const repo = String(a.repo ?? '');
+            const prNumber = Number(a.prNumber);
+            const forge = a.forge === 'gitlab' ? 'gitlab' : 'github';
+            const lens = a.lens === 'security' || a.lens === 'code' || a.lens === 'both' ? a.lens : 'both';
+            const segments = repo.split('/');
+            if (segments.length < 2 || (forge === 'github' && segments.length !== 2) || segments.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part) || part === '.' || part === '..') || !Number.isInteger(prNumber) || prNumber <= 0)
+                return { ok: false, error: 'bad repo/prNumber' };
+            try {
+                const account = await resolveBrainRouterAccountContext(config);
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                const r = await fetch(`${account.baseUrl}/api/admin/reviews/run`, {
+                    method: 'POST', headers: brainRouterAccountHeaders(account, true),
+                    body: JSON.stringify({ repo, prNumber, lens, forge }),
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok)
+                    return { ok: false, error: j.error || `HTTP ${r.status}` };
+                return { ok: true, jobs: Array.isArray(j.jobs) ? j.jobs.length : 0 };
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'run failed' };
+            }
+        },
+        // Log out of all OTHER devices — rotate the account's API key so every other
+        // client (CLI, other desktops) using the old key is invalidated, then re-key
+        // THIS device so it stays signed in. Refreshes the short-lived jwt first.
+        'action:logout-all-devices': async () => {
+            const cfg = loadConfig();
+            const base = String(cfg.cli?.account?.url ?? '').replace(/\/+$/, '');
+            const bId = Object.keys(cfg.servers ?? {}).find((k) => (cfg.servers[k]?.identity === 'brainrouter') || /^brainrouter/i.test(k));
+            const refreshToken = String(cfg.cli?.account?.refreshToken ?? '');
+            let jwt = String(cfg.cli?.account?.jwt ?? '');
+            if (!base || !bId || (!jwt && !refreshToken))
+                return { ok: false, error: 'Sign out and back in, then try again.' };
+            if (refreshToken) {
+                try {
+                    const rr = await fetch(`${base}/api/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) });
+                    if (rr.ok) {
+                        const rj = await rr.json();
+                        if (rj.jwt)
+                            jwt = rj.jwt;
+                        const f = loadConfig();
+                        if (f.cli?.account) {
+                            if (rj.jwt)
+                                f.cli.account.jwt = rj.jwt;
+                            if (rj.refreshToken)
+                                f.cli.account.refreshToken = rj.refreshToken;
+                            saveConfig(f);
+                        }
+                    }
+                }
+                catch { /* use existing jwt */ }
+            }
+            if (!jwt)
+                return { ok: false, error: 'Sign out and back in, then try again.' };
+            try {
+                const r = await fetch(`${base}/api/auth/rotate-key`, { method: 'POST', headers: { Authorization: `Bearer ${jwt}` } });
+                if (!r.ok)
+                    return { ok: false, error: r.status === 401 ? 'Sign out and back in, then try again.' : `Failed (HTTP ${r.status})` };
+                const newKey = String((await r.json()).apiKey ?? '');
+                if (!newKey)
+                    return { ok: false, error: 'No new key returned.' };
+                const fresh = loadConfig();
+                if (fresh.servers?.[bId]) {
+                    fresh.servers[bId].apiKey = newKey;
+                    saveConfig(fresh);
+                }
+                try {
+                    await mcpClient.disconnectOne(bId);
+                    await mcpClient.connectOne(bId, loadConfig().servers[bId], loadConfig().llm ?? getLlm(), 5_000);
+                }
+                catch { /* reconnect best-effort */ }
+                return { ok: true };
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        // ADR-016 C2 — GitHub connector via the backend's server-mediated OAuth broker.
+        // The desktop is a thin client: it asks the backend (with the signed-in apiKey)
+        // for the authorize URL, opens it in the system browser, then polls status.
+        'account-connectors-status': async () => fetchAccountConnectorStatuses(loadConfig(), [
+            'gitlab',
+            'slack',
+            'google-drive',
+            'gmail',
+            'notion',
+            'linear',
+        ]),
+        'connector-oauth-status': async (args) => {
+            const source = String(args.source ?? '').trim();
+            if (!['gitlab', 'slack', 'google-drive', 'gmail', 'notion', 'linear'].includes(source))
+                return { signedIn: false, connected: false, error: 'Unsupported OAuth connector source.' };
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { signedIn: false, connected: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { signedIn: false, connected: false };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/status`, { headers: brainRouterAccountHeaders(account) });
+                const data = await r.json();
+                return r.ok ? { signedIn: true, ...data } : { signedIn: true, connected: false, error: String(data.error ?? `HTTP ${r.status}`) };
+            }
+            catch (e) {
+                return { signedIn: true, connected: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'connector-oauth-start': async (args) => {
+            const source = String(args.source ?? '').trim();
+            if (!['gitlab', 'slack', 'google-drive', 'gmail', 'notion', 'linear'].includes(source))
+                return { ok: false, error: 'Unsupported OAuth connector source.' };
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false, error: 'Sign in to BrainRouter first (Settings → Account).' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                return await startAccountConnectorOAuth(account, source);
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'action:connector-oauth-disconnect': async (args) => {
+            const source = String(args.source ?? '').trim();
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/disconnect`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                return { ok: r.ok };
+            }
+            catch {
+                return { ok: false };
+            }
+        },
+        'action:connector-oauth-save': async (args) => {
+            const source = String(args.source ?? '').trim();
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false, error: 'Sign in to BrainRouter first.' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                const headers = brainRouterAccountHeaders(account);
+                const status = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/status`, { headers });
+                const data = await status.json();
+                if (!status.ok || !data.connector?.id)
+                    return { ok: false, error: 'Connect this OAuth account before saving sync settings.' };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(data.connector.id)}`, { method: 'PATCH', headers: brainRouterAccountHeaders(account, true), body: JSON.stringify({ name: String(args.name ?? source), enabled: true, config: args.config ?? {} }) });
+                return r.ok ? { ok: true } : { ok: false, error: `HTTP ${r.status}` };
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'github-connect-status': async () => {
+            return fetchGithubAccountStatus(loadConfig());
+        },
+        'github-connect-start': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false, error: 'Sign in to BrainRouter first (Settings → Account).' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                return await startAccountConnectorOAuth(account, 'github');
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'action:github-disconnect': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false };
+                const response = await fetch(`${account.baseUrl}/api/connectors/github/disconnect`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                return { ok: response.ok };
+            }
+            catch {
+                return { ok: false };
+            }
+        },
+        // Every repo the signed-in user's GitHub OAuth connection can access — the one
+        // source of truth for the repo picker AND Track sync (no per-connector token).
+        'github-connect-repos': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { connected: false, repos: [], signedIn: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { connected: false, repos: [], signedIn: false };
+                const r = await fetch(`${account.baseUrl}/api/connectors/github/repos`, { headers: brainRouterAccountHeaders(account) });
+                if (!r.ok)
+                    return { connected: false, repos: [], signedIn: true, error: `HTTP ${r.status}` };
+                return { signedIn: true, ...await r.json() };
+            }
+            catch (e) {
+                return { connected: false, repos: [], signedIn: true, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        // Device flow (no client secret) — start returns a short code + the verify URL;
+        // poll until GitHub reports the user authorized it.
+        'github-device-start': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false, error: 'Sign in to BrainRouter first.' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                const r = await fetch(`${account.baseUrl}/api/connectors/github/device/start`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                const d = await r.json();
+                if (!r.ok || !d.userCode)
+                    return { ok: false, error: d.error || `HTTP ${r.status}` };
+                return { ok: true, userCode: d.userCode, verificationUri: d.verificationUri, interval: d.interval ?? 5 };
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'github-device-poll': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { status: 'error' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { status: 'error', error: 'No active BrainRouter organization.' };
+                const r = await fetch(`${account.baseUrl}/api/connectors/github/device/poll`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                return await r.json();
+            }
+            catch (e) {
+                return { status: 'error', error: e instanceof Error ? e.message : 'failed' };
+            }
         },
         // DESK-6m — per-chat context-menu actions (Pin / Mark completed / Rename /
         // Move to group / Archive / Delete / Fork / Open). All write the shared

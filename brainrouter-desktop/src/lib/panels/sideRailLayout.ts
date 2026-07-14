@@ -4,19 +4,16 @@ import type { PanelId } from '../../panels/index.js';
 // when shrunk; a touch wider keeps the panel labels + badges comfortable.
 export const SIDE_RAIL_MIN = 240;
 export const SIDE_RAIL_MAX = 760;
-/** Roomier launch width for the right rail — the panel opens comfortable by
- *  default instead of at its bare minimum, while staying drag-resizable. */
-export const SIDE_RAIL_DEFAULT = 330;
 
 export function clampSideRailWidth(width: number): number {
-  if (!Number.isFinite(width)) return SIDE_RAIL_DEFAULT;
+  if (!Number.isFinite(width)) return 330;
   return Math.max(SIDE_RAIL_MIN, Math.min(SIDE_RAIL_MAX, Math.floor(width)));
 }
 
 /** Comfortable minimum width to open certain panels at — the Browser (uitest)
- *  and Atlas both need room for their tool rails + canvas/webview. Panels not
- *  listed keep the current width. */
-const OPEN_WIDTH: Partial<Record<PanelId, number>> = { uitest: 560, atlas: 560 };
+ *  needs room for its icon rail + URL bar + webview. Panels not listed keep the
+ *  current width. */
+const OPEN_WIDTH: Partial<Record<PanelId, number>> = { uitest: 500 };
 
 /** The side width to use when a panel is opened: at least its comfortable
  *  default (if it has one), but never shrinking the user's current width. */

@@ -87,6 +87,8 @@ import type {
   AtlasWorkspaceSummary,
   FleetSnapshotEntry,
   IMemoryStore,
+  PentestTargetInput,
+  PentestTargetRecord,
 } from "@kinqs/brainrouter-types";
 import { createPgPool } from "./connection.js";
 import { loadMigrations, applyMigrations } from "./migrate.js";
@@ -128,12 +130,15 @@ import * as providerCfg from "./queries/providerConfigQueries.js";
 import * as integrationCfg from "./queries/integrationConfigQueries.js";
 import * as designArtifacts from "./queries/designQueries.js";
 import type { DesignArtifactRecord } from "../../../design/store.js";
+import * as connectorCfg from "./queries/connectorConfigQueries.js";
+import * as pentestTargets from "./queries/pentestTargetQueries.js";
 import type { TenancyStore } from "../../../tenancy/store.js";
 import type { Role } from "../../../tenancy/rbac.js";
 import type { OrganizationRecord, OrgMemberRecord, OrgMembership, OrgPlan } from "../../../tenancy/types.js";
 import type { ProviderStore } from "../../../providers/store.js";
 import type { ProviderConfigRecord, ProviderConfigInput, ProviderKind, ResolvedProviderConfig } from "../../../providers/types.js";
 import type { IntegrationStore } from "../../../integrations/store.js";
+import type { ConnectorStore, ConnectorConfigRecord, ConnectorConfigInput, ConnectorConfigPatch, ResolvedConnector, OAuthAppConfig, ResolvedOAuthApp } from "../../../connectors/store.js";
 import type { IntegrationConfigRecord, IntegrationConfigInput, IntegrationKind, ResolvedIntegration } from "../../../integrations/types.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -169,7 +174,7 @@ export interface PostgresMemoryStoreOptions {
   compressionStore?: { ttlSeconds?: number; maxEntries?: number; now?: () => number };
 }
 
-export class PostgresMemoryStore implements IMemoryStore, TenancyStore, ProviderStore, IntegrationStore {
+export class PostgresMemoryStore implements IMemoryStore, TenancyStore, ProviderStore, IntegrationStore, ConnectorStore {
   private readonly pool: Pool;
   private readonly ownsPool: boolean;
   private vecReady = false;
@@ -338,6 +343,12 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
     return this.vecReady && this.vecDimensions > 0;
   }
 
+  /** The active embedding dimension (0 when the vector table isn't built yet). Used
+   *  by the dashboard guard that warns before a dimension-changing embedder swap. */
+  public getVecDimensions(): number {
+    return this.vecReady ? this.vecDimensions : 0;
+  }
+
   public async reembedStaleRecords(embedder: (text: string) => Promise<Float32Array>): Promise<number> {
     if (!this.vecReady) return 0;
     const rows = await this.rows<{ record_id: string; content: string }>(`
@@ -488,6 +499,9 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   public getDefaultResolvedProvider(orgId: string, kind: ProviderKind): Promise<ResolvedProviderConfig | null> {
     return providerCfg.getDefaultResolvedProvider(this.exec, orgId, kind);
   }
+  public getResolvedProvider(id: string): Promise<ResolvedProviderConfig | null> {
+    return providerCfg.getResolvedProvider(this.exec, id);
+  }
 
   // ── integrations (ADR-010 P6: org-scoped GitHub App etc.) ────────────────
 
@@ -512,6 +526,17 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   public findIntegrationByInstallation(kind: IntegrationKind, installationId: string): Promise<(ResolvedIntegration & { orgId: string }) | null> {
     return integrationCfg.findIntegrationByInstallation(this.exec, kind, installationId);
   }
+
+  // ── connectors (ADR-016 C2: per-user connector config + sealed OAuth token) ──
+  public listConnectors(userId: string): Promise<ConnectorConfigRecord[]> { return connectorCfg.listConnectors(this.exec, userId); }
+  public listAllEnabledConnectors(): Promise<ConnectorConfigRecord[]> { return connectorCfg.listAllEnabledConnectors(this.exec); }
+  public getConnector(id: string): Promise<ConnectorConfigRecord | null> { return connectorCfg.getConnector(this.exec, id); }
+  public getResolvedConnector(id: string): Promise<ResolvedConnector | null> { return connectorCfg.getResolvedConnector(this.exec, id); }
+  public createConnector(userId: string, input: ConnectorConfigInput): Promise<ConnectorConfigRecord> { return connectorCfg.createConnector(this.exec, userId, input); }
+  public updateConnector(id: string, patch: ConnectorConfigPatch): Promise<ConnectorConfigRecord | null> { return connectorCfg.updateConnector(this.exec, id, patch); }
+  public deleteConnector(id: string): Promise<void> { return connectorCfg.deleteConnector(this.exec, id); }
+  public getResolvedOAuthApp(orgId: string, source: string): Promise<ResolvedOAuthApp | null> { return connectorCfg.getResolvedOAuthApp(this.exec, orgId, source); }
+  public upsertOAuthApp(orgId: string, source: string, clientId: string, clientSecret: string | undefined, scopes?: string): Promise<OAuthAppConfig> { return connectorCfg.upsertOAuthApp(this.exec, orgId, source, clientId, clientSecret, scopes); }
 
   // ── sensory ────────────────────────────────────────────────────────────
 
@@ -796,6 +821,21 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
     return job.listMemoryJobs(this.exec, filters);
   }
 
+  public appendJobProgress(id: string, event: import("@kinqs/brainrouter-types").MemoryJobProgressEvent): Promise<void> {
+    return job.appendJobProgress(this.exec, id, event);
+  }
+
+  /** ADR-017 D5 — recent PR-review jobs for an org's Reviews dashboard (newest-first). */
+  public listReviewJobsForOrg(orgId: string, limit?: number): Promise<MemoryJobRecord[]> {
+    return job.listReviewJobsForOrg(this.exec, orgId, limit);
+  }
+  public listPentestJobsForOrg(orgId: string, limit?: number): Promise<MemoryJobRecord[]> { return job.listPentestJobsForOrg(this.exec, orgId, limit); }
+
+  public createPentestTarget(orgId: string, createdBy: string, input: PentestTargetInput): Promise<PentestTargetRecord> { return pentestTargets.createPentestTarget(this.exec, orgId, createdBy, input); }
+  public getPentestTarget(id: string): Promise<PentestTargetRecord | null> { return pentestTargets.getPentestTarget(this.exec, id); }
+  public listPentestTargets(orgId: string): Promise<PentestTargetRecord[]> { return pentestTargets.listPentestTargets(this.exec, orgId); }
+  public deletePentestTarget(orgId: string, id: string): Promise<boolean> { return pentestTargets.deletePentestTarget(this.exec, orgId, id); }
+
   public claimNextMemoryJob(options?: { now?: string }): Promise<MemoryJobRecord | null> {
     return job.claimNextMemoryJob(this.exec, options);
   }
@@ -1048,8 +1088,8 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
 
   // ── source documents + chunks ───────────────────────────────────────────
 
-  public getSourceDocumentByHash(userId: string, hash: string): Promise<SourceDocument | null> {
-    return sourcesTree.getSourceDocumentByHash(this.exec, userId, hash);
+  public getSourceDocumentByHash(userId: string, hash: string, scope?: sourcesTree.SourceDocumentScope): Promise<SourceDocument | null> {
+    return sourcesTree.getSourceDocumentByHash(this.exec, userId, hash, scope);
   }
 
   public getSourceDocument(id: string): Promise<SourceDocument | null> {
@@ -1068,8 +1108,12 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
     return sourcesTree.getRecordsMaxChurn(this.exec, userId, recordIds);
   }
 
-  public getSourceDocuments(userId: string, limit = 100): Promise<Array<SourceDocument & { chunkCount: number }>> {
-    return sourcesTree.getSourceDocuments(this.exec, userId, limit);
+  public getSourceDocuments(
+    userId: string,
+    limit = 100,
+    filters: sourcesTree.SourceDocumentListFilters = {},
+  ): Promise<Array<SourceDocument & { chunkCount: number }>> {
+    return sourcesTree.getSourceDocuments(this.exec, userId, limit, filters);
   }
 
   public pruneTranscriptSources(userId: string, beforeIso: string): Promise<{ prunedDocs: number; prunedChunks: number }> {

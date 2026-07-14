@@ -137,18 +137,35 @@ test("PostgresMemoryStore: core round-trip against a fresh pgvector database", a
   await store.init();
   await store.initVec(8);
 
+  // Pentest targets are org/user scoped and therefore exercise the tenancy FKs.
+  await store.createUser('u1', 'br_test_u1', 'Pentest owner');
+  await store.createOrganization({ orgId: 'org-pentest', name: 'Pentest Org', slug: 'pentest-org', plan: 'team' });
+  await store.addOrgMember('org-pentest', 'u1', 'owner');
+  const target = await store.createPentestTarget('org-pentest', 'u1', { kind: 'domain', value: 'https://Example.test/path', authorized: true });
+  assert.equal(target.normalizedValue, 'https://example.test');
+  assert.equal((await store.listPentestTargets('org-pentest')).length, 1);
+  assert.equal((await store.getPentestTarget(target.id))?.orgId, 'org-pentest');
+
   // version() works (sqlite_version → version()).
   const version = await store.getSqliteVersion();
   assert.match(version, /PostgreSQL/i, "getSqliteVersion returns the pg version banner");
 
   // ── cognitive upsert → getMemoryById ──
-  const r1 = cog({ id: "rec-1", content: "the recall pipeline reranks keyword and vector candidates", filePaths: ["src/memory/recall.ts"] });
+  const r1 = cog({
+    id: "rec-1",
+    content: "the recall pipeline reranks keyword and vector candidates",
+    filePaths: ["src/memory/recall.ts"],
+    orgId: "org-pentest",
+    visibility: "private",
+  });
   await store.upsertCognitive(r1);
   const fetched = await store.getMemoryById("u1", "rec-1");
   assert.ok(fetched, "getMemoryById returns the upserted record");
   assert.equal(fetched!.content, r1.content);
   assert.equal(fetched!.type, "episodic");
   assert.deepEqual(fetched!.filePaths, ["src/memory/recall.ts"]);
+  assert.equal(fetched!.orgId, "org-pentest", "cognitive records retain their organization scope");
+  assert.equal(fetched!.visibility, "private", "cognitive records retain their visibility");
 
   // tenant isolation: another user can't read it.
   assert.equal(await store.getMemoryById("other", "rec-1"), null, "record is user-scoped");

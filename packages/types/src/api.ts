@@ -67,6 +67,40 @@ export interface UserResetKeyResponse {
   apiKey: string;
 }
 
+/** PR Review Console contracts. Findings deliberately exclude model-generated bodies. */
+export interface ReviewFindingDetailDto {
+  file: string;
+  line?: number;
+  severity: string;
+  title: string;
+  cwe?: string;
+  preExisting?: boolean;
+  suggestable?: boolean;
+}
+export interface ReviewProgressEventDto {
+  ts: string;
+  kind: string;
+  msg: string;
+  data?: Record<string, unknown>;
+}
+export interface ReviewJobDto {
+  id: string;
+  lens: "security" | "code" | "pentest";
+  status: string;
+  repo: string | null;
+  prNumber: number | null;
+  forge?: "github" | "gitlab";
+  findings: number | null;
+  blocking: number | null;
+  findingsDetail: ReviewFindingDetailDto[];
+  progress: ReviewProgressEventDto[];
+  skipped: string | null;
+  error: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+export interface ManualReviewRunRequest { repo: string; prNumber: number; lens: "security" | "code" | "pentest" | "both"; forge?: "github" | "gitlab"; }
+
 export interface CursorPaginationParams {
   cursor?: string;
   limit?: number;
@@ -172,6 +206,28 @@ export interface ExplainRecallRequest {
 }
 
 export type ExplainRecallResponse = RecallResult;
+
+/** Authenticated dashboard/SDK chat turn, scoped by the active org header. */
+export interface BrainChatRequest {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  sessionKey: string;
+  projectId?: string;
+  workspaceTag?: string;
+}
+
+export interface BrainChatCitation {
+  recordId: string;
+  title?: string;
+  excerpt: string;
+  type?: string;
+  score?: number;
+}
+
+export interface BrainChatResponse {
+  message: { role: "assistant"; content: string };
+  citations: BrainChatCitation[];
+  recallStrategy: string;
+}
 
 export interface WorkingStep {
   nodeId: string;

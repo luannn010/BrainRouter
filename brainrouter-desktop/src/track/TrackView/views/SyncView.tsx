@@ -1,10 +1,11 @@
 /**
- * Track view — External sync (GitHub Issues) panel: git context, repo config,
+ * Track view — External issue sync panel: git context, repo config,
  * export/import/two-way actions, and result rendering. Split out of
  * TrackView.tsx byte-for-byte; no behavior change.
  */
 import React, { useState } from 'react';
 import { Icon } from '../../../icons.js';
+import { isTrackSyncAuthFailure, resolveTrackSyncAvailability } from '../../../lib/track/syncAvailability.js';
 import type { SyncConfig, SyncResult, GitTrackContext, TrackOps } from '../shared/types.js';
 
 type SyncBusy = 'import' | 'export' | 'sync' | 'gh-import' | 'scan' | 'refresh-git' | null;
@@ -13,8 +14,10 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
   const [busy, setBusy] = useState<SyncBusy>(null);
   const cfg = sync.config;
   const result = sync.result;
-  const configured = !!(cfg?.repo && cfg?.hasToken);
-  const gitLabel = git?.githubRepo ?? git?.root;
+  const availability = resolveTrackSyncAvailability(cfg);
+  const { configured } = availability;
+  const providerLabel = availability.provider === 'gitlab' ? 'GitLab' : 'GitHub';
+  const gitLabel = availability.provider === 'gitlab' ? availability.repo ?? git?.root : git?.githubRepo ?? git?.root;
   const repos = cfg?.repos?.length ? cfg.repos : (cfg?.repo ? [{ repo: cfg.repo, hasToken: cfg.hasToken, tokenSource: cfg.tokenSource, active: true }] : []);
 
   // Clear the busy spinner whenever a fresh result lands.
@@ -32,15 +35,16 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
   };
   const iconFor = (kind: Exclude<SyncBusy, null>, icon: string): React.ReactNode => busy === kind ? <span className="spinner sm" /> : <Icon name={icon} size={12} />;
   const rows = result ? (result.exported ?? result.imported ?? []) : [];
+  const authFailure = isTrackSyncAuthFailure(result?.errors);
 
   return (
     <div className="track-sync">
       <div className="track-section-head">
-        External sync <span className="track-col-count">GitHub Issues</span>
-        <button className={`track-member-pull${busy === 'gh-import' ? ' is-busy' : ''}`} disabled={!!busy} title="Import open GitHub issues through the GitHub CLI auth store" onClick={() => runAction('gh-import', ops.importGhIssues)}>{iconFor('gh-import', 'arrow-down')} {busy === 'gh-import' ? 'Importing' : 'Import via gh'}</button>
+        External sync <span className="track-col-count">{providerLabel} Issues</span>
+        {availability.provider === 'github' ? <button className={`track-member-pull${busy === 'gh-import' ? ' is-busy' : ''}`} disabled={!!busy} title="Import open GitHub issues through the GitHub CLI auth store" onClick={() => runAction('gh-import', ops.importGhIssues)}>{iconFor('gh-import', 'arrow-down')} {busy === 'gh-import' ? 'Importing' : 'Import via gh'}</button> : null}
         <button className={`track-member-pull${busy === 'scan' ? ' is-busy' : ''}`} disabled={!!busy} title="Scan recent commit messages for BR-123 references — link each commit to its work item and advance todo → in-progress" onClick={() => runAction('scan', ops.scanCommits)}>{iconFor('scan', 'commit')} {busy === 'scan' ? 'Scanning' : 'Scan commits'}</button>
       </div>
-      <p className="track-auto-intro">Two-way sync between this project and a GitHub repository's issues. Work items export as issues (type/priority become labels, done → closed); issues import back as work items. Re-runs update in place — no duplicates. <b>Scan commits</b> links commits to items by their <code className="mono">BR-123</code> reference, so the board advances even when the agent forgets to link.</p>
+      <p className="track-auto-intro">Two-way sync between this project and a {providerLabel} repository's issues. Work items export as issues (type/priority become labels, done → closed); issues import back as work items. Re-runs update in place — no duplicates. <b>Scan commits</b> links commits to items by their <code className="mono">BR-123</code> reference, so the board advances even when the agent forgets to link.</p>
 
       <div className="track-sync-config">
         <div className="track-sync-conn">
@@ -58,10 +62,16 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
       <div className="track-sync-config">
         <div className="track-sync-conn">
           <span className={`track-sync-dot${configured ? ' on' : ''}`} />
-          {cfg?.repo ? (
+          {availability.repo ? (
             <>
-              <span className="track-sync-repo mono">{cfg.repo}</span>
-              <span className={`track-sync-token${cfg.hasToken ? ' ok' : ''}`}>{cfg.hasToken ? `active · token via ${cfg.tokenSource}` : 'active · no token'}</span>
+              <span className="track-sync-repo mono">{availability.repo}</span>
+              <span className={`track-sync-token${configured ? ' ok' : ''}`}>
+                {availability.accountManaged
+                  ? `${availability.source} · OAuth credential sealed in your account`
+                  : configured
+                    ? `active · token via ${availability.source}`
+                    : `detected · connect ${providerLabel} to sync`}
+              </span>
             </>
           ) : <span className="track-sync-unset">No repository configured</span>}
         </div>
@@ -69,25 +79,37 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
           <div className="track-sync-repos">
             {repos.map((r) => (
               <div key={r.repo} className={`track-sync-repo-row${r.active ? ' active' : ''}`}>
-                <span className={`track-sync-dot${r.hasToken ? ' on' : ''}`} />
+                <span className={`track-sync-dot${r.hasToken || (availability.accountManaged && r.repo === availability.repo) ? ' on' : ''}`} />
                 <span className="track-sync-repo mono">{r.repo}</span>
                 {r.label ? <span className="track-sync-token">{r.source === 'connector' ? `connector · ${r.label}` : r.label}</span> : null}
                 {r.active ? <span className="track-sync-token ok">active</span> : null}
-                <span className={`track-sync-token${r.hasToken ? ' ok' : ''}`}>{r.hasToken ? `token via ${r.tokenSource}` : 'no token'}</span>
+                <span className={`track-sync-token${r.hasToken || (availability.accountManaged && r.repo === availability.repo) ? ' ok' : ''}`}>
+                  {availability.accountManaged && r.repo === availability.repo
+                    ? 'OAuth via account'
+                    : r.hasToken ? `token via ${r.tokenSource}` : 'no local credential'}
+                </span>
               </div>
             ))}
           </div>
         ) : null}
         {!configured ? (
           <p className="track-sync-help">
-            Connect a repository in <b>Settings → Connectors → GitHub Track sync</b>, then reopen this tab.
+            {cfg?.account?.signedIn
+              ? <>Connect {providerLabel} in <b>Settings → Connections → Connectors</b>. This workspace's {providerLabel} remote is detected automatically.</>
+              : <>Sign in and connect {providerLabel} in <b>Settings → Connections → Connectors</b>{availability.provider === 'github' ? ', or configure a local GitHub credential.' : '.'}</>}
+            {cfg?.account?.error ? <><br />Account status: {cfg.account.error}</> : null}
+          </p>
+        ) : null}
+        {authFailure ? (
+          <p className="track-sync-help track-sync-auth-error" role="alert">
+            {providerLabel} authorization is no longer valid. Reconnect {providerLabel} in <b>Settings → Connections → Connectors</b>, then run the dry-run again. No sync changes were applied.
           </p>
         ) : null}
       </div>
 
       <div className="track-sync-actions">
         <div className="track-sync-act">
-          <div className="track-sync-act-head"><Icon name="arrow-up" size={13} /> Export → GitHub</div>
+          <div className="track-sync-act-head"><Icon name="arrow-up" size={13} /> Export → {providerLabel}</div>
           <div className="track-sync-act-sub">Push work items to issues</div>
           <div className="track-sync-btns">
             <button className="track-sync-dry" disabled={!configured || !!busy} onClick={() => run('export', true)}>Dry-run</button>
@@ -95,7 +117,7 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
           </div>
         </div>
         <div className="track-sync-act">
-          <div className="track-sync-act-head"><Icon name="arrow-down" size={13} /> Import ← GitHub</div>
+          <div className="track-sync-act-head"><Icon name="arrow-down" size={13} /> Import ← {providerLabel}</div>
           <div className="track-sync-act-sub">Pull issues into the board</div>
           <div className="track-sync-btns">
             <button className="track-sync-dry" disabled={!configured || !!busy} onClick={() => run('import', true)}>Dry-run</button>
@@ -104,7 +126,7 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
         </div>
         <div className="track-sync-act track-sync-act-wide">
           <div className="track-sync-act-head"><Icon name="refresh" size={13} /> Sync ⇅ Both ways</div>
-          <div className="track-sync-act-sub">Reconcile both sides — pushes local edits up, pulls GitHub edits down, and flags anything changed on both without overwriting either.</div>
+          <div className="track-sync-act-sub">Reconcile both sides — pushes local edits up, pulls {providerLabel} edits down, and flags anything changed on both without overwriting either.</div>
           <div className="track-sync-btns">
             <button className="track-sync-dry" disabled={!configured || !!busy} onClick={() => run('sync', true)}>Dry-run</button>
             <button className={`track-sync-go${busy === 'sync' ? ' is-busy' : ''}`} disabled={!configured || !!busy} onClick={() => run('sync', false)}>{busy === 'sync' ? <span className="spinner sm" /> : null}{busy === 'sync' ? 'Syncing' : 'Sync both'}</button>
@@ -122,7 +144,7 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
               </div>
               {result.conflicts?.length ? (
                 <div className="track-sync-rows">
-                  <div className="track-sync-conflict-label">{result.conflicts.length} conflict{result.conflicts.length === 1 ? '' : 's'} — changed on both sides; kept local, left GitHub. Reconcile the field, then sync again.</div>
+                  <div className="track-sync-conflict-label">{result.conflicts.length} conflict{result.conflicts.length === 1 ? '' : 's'} — changed on both sides; kept local, left {providerLabel}. Reconcile the field, then sync again.</div>
                   {result.conflicts.map((c, i) => (
                     <div key={i} className="track-sync-row">
                       <span className="track-sync-act-tag conflict">conflict</span>
@@ -131,6 +153,8 @@ export function SyncView({ sync, git, ops }: { sync: { config: SyncConfig | null
                     </div>
                   ))}
                 </div>
+              ) : result.errors.length ? (
+                <div className="track-sync-conflict-label">Sync completed with errors — review the details below and retry after resolving them.</div>
               ) : <div className="track-col-empty">In sync — nothing to reconcile.</div>}
             </>
           ) : (

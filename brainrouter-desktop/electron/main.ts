@@ -343,6 +343,10 @@ function openWorkspaceWindow(workspaceRoot: string): void {
     title: `BrainRouter — ${path.basename(workspaceRoot)}`,
     backgroundColor: '#262624',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Pin the macOS traffic lights so their centre (~y20) sits on the 40px
+    // titlebar band's centre regardless of macOS version — keeps the top row
+    // consistent instead of the lights floating in the top third.
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 13 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -365,6 +369,24 @@ function openWorkspaceWindow(workspaceRoot: string): void {
     if (!isAllowedWebviewSrc(typeof params.src === 'string' ? params.src : '', workspaceRoot)) {
       event.preventDefault();
     }
+  });
+  // The attach gate only vets the INITIAL src. A guest's own loadURL()/link
+  // click/redirect must be gated too, or the omnibox could navigate to a remote
+  // origin or file:// outside the workspace (arbitrary local-file read). Re-apply
+  // the same policy to every guest navigation, and deny guest window.open.
+  win.webContents.on('did-attach-webview', (_event, guest) => {
+    const gate = (e: { preventDefault: () => void }, url: string): void => {
+      if (!isAllowedWebviewSrc(url, workspaceRoot)) e.preventDefault();
+    };
+    guest.on('will-navigate', gate);
+    guest.on('will-redirect', gate);
+    // A target=_blank / window.open link opens IN the same browser view (like a
+    // real browser's "open here"), never a floating BrowserWindow — but only for
+    // an allowed URL, so the policy still holds.
+    guest.setWindowOpenHandler(({ url }) => {
+      if (isAllowedWebviewSrc(url, workspaceRoot)) void guest.loadURL(url).catch(() => undefined);
+      return { action: 'deny' };
+    });
   });
   const wp: WinPool = { win, hosts: new Map(), lastSession: new Map(), pool: emptyPool(), retiring: new Set() };
   wins.set(win.webContents.id, wp);

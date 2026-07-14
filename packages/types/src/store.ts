@@ -12,6 +12,7 @@ import type {
   MemoryJobEnqueueInput,
   MemoryJobListFilters,
   MemoryJobKindAggregate,
+  MemoryJobProgressEvent,
   GraphEdge,
   GraphNode,
   ContradictionRecord,
@@ -34,6 +35,7 @@ import type {
   UserRecord,
   VectorSearchResult,
 } from "./memory.js";
+import type { PentestTargetInput, PentestTargetRecord } from "./pentest.js";
 import type { AtlasGraph } from "./atlas.js";
 
 /** A tenant's stored Atlas workspace summary (REMOTE-BRAIN Phase 3). */
@@ -256,6 +258,7 @@ export interface IMemoryStore {
   enqueueMemoryJob(input: MemoryJobEnqueueInput, options?: { idGenerator?: () => string; now?: string }): Promise<MemoryJobRecord>;
   getMemoryJob(id: string): Promise<MemoryJobRecord | null>;
   listMemoryJobs(filters?: MemoryJobListFilters): Promise<MemoryJobRecord[]>;
+  appendJobProgress(id: string, event: MemoryJobProgressEvent): Promise<void>;
   claimNextMemoryJob(options?: { now?: string }): Promise<MemoryJobRecord | null>;
   /**
    * Transition a specific `pending` job to `running` (stamps
@@ -376,4 +379,8 @@ export interface IMemoryStore {
   putFleetSnapshot(userId: string, host: string, snapshot: unknown, jobCount: number): Promise<void>;
   /** List a tenant's stored fleet snapshots (one per host), most-recent first. */
   getFleetSnapshots(userId: string): Promise<FleetSnapshotEntry[]>;
+  createPentestTarget(orgId: string, createdBy: string, input: PentestTargetInput): Promise<PentestTargetRecord>;
+  getPentestTarget(id: string): Promise<PentestTargetRecord | null>;
+  listPentestTargets(orgId: string): Promise<PentestTargetRecord[]>;
+  deletePentestTarget(orgId: string, id: string): Promise<boolean>;
 }

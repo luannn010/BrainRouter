@@ -210,7 +210,6 @@ export function createSecretBridge(port) {
         },
     };
 }
-export const TERM_BUF_CAP = 400_000;
 /**
  * DESK-5c — live model list, same endpoint contract as the CLI wizard's
  * fetchOpenAiCompatibleModels (cli/wizard/modelsApi.ts, not imported here

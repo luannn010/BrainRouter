@@ -24,6 +24,9 @@ import type { TenancyStore, EmailAuthStore, OrgPersonaStore, MemorySharingStore,
 import type { ProviderStore } from "../providers/store.js";
 import type { IntegrationStore } from "../integrations/store.js";
 import type { DesignStore } from "../design/store.js";
+import type { ConnectorStore } from "../connectors/store.js";
+import { resolveGithubAccountToken } from "../connectors/githubAccountToken.js";
+import { isSsrfBlockedHost } from "../connectors/gitlabTrackProxy.js";
 import { resolveProviderConfig } from "../providers/resolver.js";
 import { seedProvidersFromEnv } from "../providers/seed.js";
 import { systemProviderOrgId } from "../providers/runtime.js";
@@ -68,6 +71,10 @@ export class MemoryEngine {
   private embeddingService!: EmbeddingService; // MEM-VEC — reused for embed-on-import
   private extractionRunner: LLMRunner;
   private synthesisRunner: LLMRunner;
+  private securityReviewRunner: LLMRunner;
+  private codeReviewRunner: LLMRunner;
+  private pentestReviewRunner: LLMRunner;
+  private reviewAssignments: Record<"security" | "code" | "pentest", { maxDiffChars?: number; timeoutMs?: number }> = { security: {}, code: {}, pentest: {} };
   private sweeperTimer?: NodeJS.Timeout;
   private activeSessionSweeperTimer?: NodeJS.Timeout;
   private sessionInboxSweeperTimer?: NodeJS.Timeout;
@@ -117,6 +124,9 @@ export class MemoryEngine {
     this.synthesisRunner = new ModelLLMRunner(
       process.env.BRAINROUTER_SYNTHESIS_MODEL
     );
+    this.securityReviewRunner = new ModelLLMRunner();
+    this.codeReviewRunner = new ModelLLMRunner();
+    this.pentestReviewRunner = new ModelLLMRunner();
 
     // REFAC-ENGINE-SPLIT (0.4.17) — every env-configured service + pipeline is
     // built in lifecycleOps.buildServices; the engine just wires the results
@@ -399,6 +409,12 @@ export class MemoryEngine {
     return this.store as unknown as EmailAuthStore;
   }
 
+  /** The active embedding dimension (0 if unbuilt) — for the embedder-swap guard. */
+  public getEmbeddingDimensions(): number {
+    const s = this.store as unknown as { getVecDimensions?: () => number };
+    return typeof s.getVecDimensions === "function" ? s.getVecDimensions() : 0;
+  }
+
   /** ADR-014 P-C — team consensus persona store. */
   public get orgPersona(): OrgPersonaStore {
     return this.store as unknown as OrgPersonaStore;
@@ -433,6 +449,10 @@ export class MemoryEngine {
   public get design(): DesignStore {
     return this.store as unknown as DesignStore;
   }
+  /** ADR-016 C2 — per-user connectors + sealed OAuth tokens (server-side). */
+  public get connectors(): ConnectorStore {
+    return this.store as unknown as ConnectorStore;
+  }
 
   /**
    * ADR-010 P2 — the ".env retired" cutover. Resolve the system org's DB provider
@@ -449,7 +469,7 @@ export class MemoryEngine {
       const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
       // Brain agent-models (BRAIN_AGENT_ROLES): per-role model overrides on the
       // shared LLM provider (extraction / synthesis / judge are brain sub-agents).
-      const assigns = (await this.emailAuth.getSetting<Record<string, { model?: string }>>(`agentModels:${orgId}`)) ?? {};
+      const assigns = (await this.emailAuth.getSetting<Record<string, { provider?: string; model?: string; maxDiffChars?: number; timeoutMs?: number }>>(`agentModels:${orgId}`)) ?? {};
       const llm = await resolveProviderConfig(store, orgId, "llm");
       if (llm) {
         const o = {
@@ -467,6 +487,19 @@ export class MemoryEngine {
           const set = (runner as { setProviderOverride?: (x: typeof o) => void }).setProviderOverride;
           if (typeof set === "function") set.call(runner, o);
         }
+        const configureReview = async (lens: "security" | "code" | "pentest", runner: LLMRunner, role: "security-review" | "code-review" | "pentest") => {
+          const assign = assigns[role] ?? {};
+          const namedRecord = assign.provider ? await this.providers.getProviderConfig(assign.provider) : null;
+          const named = namedRecord?.orgId === orgId && assign.provider ? await this.providers.getResolvedProvider(assign.provider) : null;
+          const selected = named ?? llm;
+          const override = { endpoint: selected.endpoint, apiKey: selected.apiKey, model: selected.model, wireFormat: str(selected.wireFormat), fallbackModel: str(selected.extra?.fallbackModel), fallbackEndpoint: str(selected.extra?.fallbackEndpoint), fallbackApiKey: str(selected.extra?.fallbackApiKey) };
+          (runner as { setProviderOverride?: (x: typeof override) => void }).setProviderOverride?.(override);
+          (runner as { setModelOverride?: (m?: string) => void }).setModelOverride?.(str(assign.model));
+          this.reviewAssignments[lens] = { ...(typeof assign.maxDiffChars === "number" ? { maxDiffChars: assign.maxDiffChars } : {}), ...(typeof assign.timeoutMs === "number" ? { timeoutMs: assign.timeoutMs } : {}) };
+        };
+        await configureReview("security", this.securityReviewRunner, "security-review");
+        await configureReview("code", this.codeReviewRunner, "code-review");
+        await configureReview("pentest", this.pentestReviewRunner, "pentest");
         // Register the LLM provider in the single gateway (the one authority).
         modelGateway.configure("llm", { endpoint: llm.endpoint, apiKey: llm.apiKey, model: llm.model, wireFormat: str(llm.wireFormat) });
         // Extraction + synthesis brain sub-agents: per-role model on the LLM provider.
@@ -487,6 +520,54 @@ export class MemoryEngine {
     } catch {
       /* best-effort — keep the env-built config on any DB error */
     }
+  }
+
+  /**
+   * Build a job-local review runner for the requesting org. A shared mutable
+   * runner would let simultaneous organizations overwrite each other's provider
+   * assignment, so only the system-org runners are long-lived; queued reviews get
+   * an isolated configured runner.
+   */
+  public async reviewRunner(lens: "security" | "code" | "pentest", orgId = systemProviderOrgId()): Promise<LLMRunner> {
+    if (orgId === systemProviderOrgId()) return lens === "security" ? this.securityReviewRunner : lens === "code" ? this.codeReviewRunner : this.pentestReviewRunner;
+    const runner = new ModelLLMRunner();
+    const assigns = (await this.emailAuth.getSetting<Record<string, { provider?: string; model?: string }>>(`agentModels:${orgId}`)) ?? {};
+    const assign = assigns[lens === "security" ? "security-review" : lens === "code" ? "code-review" : "pentest"] ?? {};
+    const base = await resolveProviderConfig(this.providers, orgId, "llm");
+    const record = assign.provider ? await this.providers.getProviderConfig(assign.provider) : null;
+    const selected = record?.orgId === orgId && assign.provider ? await this.providers.getResolvedProvider(assign.provider) : null;
+    const provider = selected ?? base;
+    if (provider) {
+      runner.setProviderOverride({ endpoint: provider.endpoint, apiKey: provider.apiKey, model: provider.model, wireFormat: provider.wireFormat, fallbackModel: typeof provider.extra?.fallbackModel === "string" ? provider.extra.fallbackModel : undefined, fallbackEndpoint: typeof provider.extra?.fallbackEndpoint === "string" ? provider.extra.fallbackEndpoint : undefined, fallbackApiKey: typeof provider.extra?.fallbackApiKey === "string" ? provider.extra.fallbackApiKey : undefined });
+      runner.setModelOverride(assign.model);
+    }
+    return runner;
+  }
+
+  /** Non-secret per-lens execution knobs, loaded in the same org scope as the runner. */
+  public async reviewAssignment(lens: "security" | "code" | "pentest", orgId = systemProviderOrgId()): Promise<{ maxDiffChars?: number; timeoutMs?: number }> {
+    if (orgId === systemProviderOrgId()) return this.reviewAssignments[lens];
+    const assigns = (await this.emailAuth.getSetting<Record<string, { maxDiffChars?: unknown; timeoutMs?: unknown }>>(`agentModels:${orgId}`)) ?? {};
+    const assign = assigns[lens === "security" ? "security-review" : lens === "code" ? "code-review" : "pentest"] ?? {};
+    return { ...(typeof assign.maxDiffChars === "number" ? { maxDiffChars: assign.maxDiffChars } : {}), ...(typeof assign.timeoutMs === "number" ? { timeoutMs: assign.timeoutMs } : {}) };
+  }
+
+  /** Resolve an immutable, org-scoped LLM configuration for an unattended
+   * agentic pentest. The key is returned only to the in-process executor and is
+   * never written into the job payload or progress stream. */
+  public async pentestAgentConfig(orgId: string): Promise<{ provider: string; apiKey: string; model: string; endpoint?: string } | null> {
+    const assignments = (await this.emailAuth.getSetting<Record<string, { provider?: string; model?: string }>>(`agentModels:${orgId}`)) ?? {};
+    const assignment = assignments.pentest ?? {};
+    const record = assignment.provider ? await this.providers.getProviderConfig(assignment.provider) : null;
+    const selected = record?.orgId === orgId && assignment.provider ? await this.providers.getResolvedProvider(assignment.provider) : null;
+    const resolved = selected ?? await resolveProviderConfig(this.providers, orgId, "llm");
+    if (!resolved) return null;
+    return {
+      provider: record?.providerId ?? "openai-compatible",
+      apiKey: resolved.apiKey,
+      model: assignment.model?.trim() || resolved.model,
+      ...(resolved.endpoint ? { endpoint: resolved.endpoint } : {}),
+    };
   }
 
   public createUser(userId: string, apiKey: string, displayName = "", isAdmin = false): Promise<UserRecord> {
@@ -566,6 +647,63 @@ export class MemoryEngine {
     metadata?: Record<string, unknown>;
   }): Promise<CognitiveRecord> {
     return memoryOps.upsertEngineeringMemory(this, params);
+  }
+
+  /**
+   * Ingest verified pentest findings into the org's cognitive memory so future
+   * scans and code reviews can recall "we already found X against this target".
+   * Routes every record through upsertEngineeringMemory (the redaction + length
+   * chokepoint — Bearer/sk-/ghp_/PEM/API_KEY/IPv4 in a PoC are scrubbed), then
+   * promotes it to org visibility so the whole org can recall it. Best-effort;
+   * findings whose final status is dismissed/disputed/out-of-scope are skipped.
+   */
+  public async recordPentestFindings(params: {
+    orgId: string;
+    userId: string;
+    target: string;
+    reviewId: string;
+    findings: Array<{
+      id: string; severity: string; summary: string; details?: string;
+      file?: string; line?: number; cvss?: number; cvssVector?: string;
+      cwe?: string; cve?: string; poc?: string; remediation?: string;
+      status?: string; confidence?: number;
+    }>;
+  }): Promise<number> {
+    const skip = new Set(["dismissed", "disputed", "out-of-scope"]);
+    let recorded = 0;
+    // Bound org-memory writes so a hostile target that steers the agent into
+    // emitting a huge finding set cannot amplify into unbounded ingestion.
+    for (const f of params.findings.slice(0, 100)) {
+      if (f.status && skip.has(f.status)) continue;
+      // NOTE: the raw proof-of-concept is deliberately NOT composed into this
+      // org-shared record — a captured session cookie / JWT / cloud key inside a
+      // PoC would otherwise be promoted org-wide into recall + briefings, and the
+      // memory redaction denylist cannot catch every secret shape. The full PoC
+      // stays only in the local workspace SARIF (.brainrouter/findings.sarif).
+      const content = [
+        `SECURITY FINDING (${String(f.severity).toUpperCase()}): ${f.summary}`,
+        f.cwe ? `CWE: ${f.cwe}` : "",
+        typeof f.cvss === "number" ? `CVSS: ${f.cvss}${f.cvssVector ? ` (${f.cvssVector})` : ""}` : "",
+        f.file ? `Location: ${f.file}${f.line ? `:${f.line}` : ""}` : "",
+        `Target: ${params.target}`,
+        f.details ? `Impact: ${f.details.slice(0, 1200)}` : "",
+        f.remediation ? `Remediation: ${f.remediation.slice(0, 800)}` : "",
+      ].filter(Boolean).join("\n");
+      const rec = await this.upsertEngineeringMemory({
+        userId: params.userId,
+        type: "bug_finding",
+        content,
+        priority: f.severity === "critical" ? 95 : f.severity === "high" ? 90 : 75,
+        confidence: Math.max(0.5, Math.min(1, (f.confidence ?? 70) / 100)),
+        sourceKind: "model_inference",
+        verificationStatus: f.poc ? "verified" : "unverified",
+        filePaths: f.file ? [f.file] : [],
+        metadata: { kind: "pentest-finding", source: "pentest", cwe: f.cwe, cve: f.cve, cvss: f.cvss, severity: f.severity, target: params.target, reviewId: params.reviewId, findingId: f.id },
+      });
+      await this.sharing.setMemoryVisibility(rec.id, params.userId, params.orgId, "org");
+      recorded += 1;
+    }
+    return recorded;
   }
 
   /** MEM-32 — record a durable, fingerprint-reinforcing lesson/insight; see lessons/lessonOps.ts. */
@@ -785,6 +923,39 @@ export class MemoryEngine {
     opts?: { sampleSize?: number; baseDir?: string },
   ): Promise<{ summaryPath: string | null; statsByMode: Record<string, ModeStats>; sampled: number; passed: boolean; skippedModes: string[]; latencyMsByMode: Record<string, number> }> {
     return benchOps.runRetrievalBenchmark(this, userId, opts);
+  }
+
+  /** ADR-017 D5 — the org's GitHub App creds (config + opened secret) for a webhook installation. */
+  public async findGithubAppByInstallation(installationId: string): Promise<{ config: Record<string, unknown>; secret: Record<string, string> } | null> {
+    const r = await this.integrations.findIntegrationByInstallation("github_app", installationId);
+    return r ? { config: r.config, secret: r.secret } : null;
+  }
+
+  /** Manual review jobs may reuse the requester's existing GitHub connector.
+   * The sealed credential is resolved only inside the worker and never stored in
+   * the job input or returned through an API. */
+  public async findGithubAccountAuthorization(userId: string): Promise<{ token: string; apiBase: string } | null> {
+    const account = await resolveGithubAccountToken(this.emailAuth, userId);
+    return account ? { token: account.accessToken, apiBase: "https://api.github.com" } : null;
+  }
+
+  /** GitLab manual-review jobs resolve the requester's sealed OAuth connector
+   * only inside the worker. The provider host is fixed by connector config and
+   * must be HTTPS; neither it nor the credential is accepted from the job. */
+  public async findGitlabAccountAuthorization(userId: string, orgId: string): Promise<{ token: string; apiBase: string; config: Record<string, unknown> } | null> {
+    const rows = await this.connectors.listConnectors(userId);
+    const row = rows.find((item) => item.orgId === orgId && item.source === "gitlab" && item.hasCredential);
+    if (!row) return null;
+    const resolved = await this.connectors.getResolvedConnector(row.id);
+    const token = resolved?.credential?.accessToken?.trim();
+    if (!resolved || !token) return null;
+    let host: URL;
+    try { host = new URL(typeof resolved.config.hostUrl === "string" && resolved.config.hostUrl.trim() ? resolved.config.hostUrl.trim() : "https://gitlab.com"); }
+    catch { return null; }
+    if (host.protocol !== "https:" || host.username || host.password) return null;
+    if (isSsrfBlockedHost(host)) return null;
+    const basePath = host.pathname.replace(/\/+$/, "").replace(/\/api\/v4$/i, "");
+    return { token, apiBase: `${host.origin}${basePath}/api/v4`, config: resolved.config };
   }
 
   /** MEM-25 code-recall benchmark over built-in fixtures; see engine/benchOps.ts. */

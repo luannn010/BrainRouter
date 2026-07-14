@@ -10,8 +10,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
-import { useAuth } from "../../components/AuthProvider";
 import { AuthGuard } from "../../components/AuthGuard";
 import { PageHeader } from "../../components/PageHeader";
 import { PremiumCard } from "../../components/PremiumCard";
@@ -29,13 +27,15 @@ const REASONING = ["", "low", "medium", "high", "xhigh"];
 
 // Brain sub-agent roles (packages/core BRAIN_AGENT_ROLES) — the list arrives from
 // the backend; these are the labels. Each picks a model on the LLM provider.
-const ROLE_LABELS: Record<string, string> = { extraction: "Extraction", synthesis: "Synthesis", judge: "Relevance judge" };
+const ROLE_LABELS: Record<string, string> = { extraction: "Extraction", synthesis: "Synthesis", judge: "Relevance judge", "security-review": "🛡️ Security review", "code-review": "🔎 Code review" };
 const ROLE_DESC: Record<string, string> = {
   extraction: "Distills memories from each turn.",
   synthesis: "Identity distillation, digests & summaries.",
   judge: "Filters retrieved memories for real relevance.",
+  "security-review": "Gating PR security reviewer. Inherits the base LLM when unset.",
+  "code-review": "Advisory PR code reviewer. Inherits the base LLM when unset.",
 };
-type AgentAssign = { provider?: string; model?: string };
+type AgentAssign = { provider?: string; model?: string; maxDiffChars?: number; timeoutMs?: number };
 
 interface CatalogEntry { id: string; label: string; endpoint: string; local: boolean; defaultModels?: string[] }
 interface Draft {
@@ -58,8 +58,9 @@ const monogram = (s: string) => (s || "?").trim().slice(0, 2).toUpperCase();
 const hostOf = (url: string) => url.replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "custom endpoint";
 
 function ProvidersInner() {
-  const router = useRouter();
-  const { user } = useAuth();
+  // No client-side isAdmin gate: /api/admin/providers is org-scoped
+  // (requirePermission("providers:manage")) so org owners/managers are already
+  // authorized server-side — bouncing them to /overview was the real blocker.
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [secretReady, setSecretReady] = useState(true);
@@ -105,7 +106,6 @@ function ProvidersInner() {
 
   useEffect(() => { void load(); void loadAux(); }, [load, loadAux]);
   useEffect(() => { void loadCatalog(galleryKind); }, [galleryKind, loadCatalog]);
-  useEffect(() => { if (user && !user.isAdmin) router.replace("/overview"); }, [router, user]);
 
   function openCatalog(c: CatalogEntry) {
     setEditingId(null);
@@ -163,6 +163,19 @@ function ProvidersInner() {
     try {
       const models = probed.length > 0 && selected.length === probed.length ? [] : selected;
       const model = draft.model.trim() || selected[0] || "";
+
+      // Guard: swapping to a DIFFERENT-dimension embedder rebuilds cognitive_vec and
+      // drops every existing embedding (they must be re-embedded). Confirm first.
+      if (draft.kind === "embedding" && model) {
+        const dim = await adminApi.probeEmbeddingDim(draft.baseUrl.trim(), draft.apiKey.trim(), model);
+        if (dim.ok && dim.dimensions && dim.currentDimensions > 0 && dim.dimensions !== dim.currentDimensions) {
+          const ok = window.confirm(
+            `This embedding model produces ${dim.dimensions}-dimensional vectors, but your memory store is ${dim.currentDimensions}-dimensional.\n\n` +
+            `Saving will REBUILD the vector table and DROP all existing embeddings — every memory must be re-embedded before it's searchable again.\n\nContinue?`,
+          );
+          if (!ok) { setSaving(false); return; }
+        }
+      }
       const body: any = {
         kind: draft.kind, providerId: draft.providerId || undefined, label: draft.label.trim(),
         baseUrl: draft.baseUrl.trim(), model, models, wireFormat: draft.wireFormat || undefined,
@@ -226,7 +239,7 @@ function ProvidersInner() {
                   <button key={c.id} type="button" className="prov-card" onClick={() => openCatalog(c)} title={`Set up ${c.label}`}>
                     <span className="prov-icon" style={{ background: providerGradient(c.id) }} aria-hidden>{monogram(c.label)}</span>
                     <span className="prov-meta">
-                      <span className="prov-name">{c.label}{c.local ? " (local)" : ""}</span>
+                      <span className="prov-name">{c.label}</span>
                       <span className="prov-host">{hostOf(c.endpoint)}</span>
                     </span>
                     <span className={`prov-status ${done ? "prov-status--ok" : ""}`}>{done ? "✓ Configured" : "Connect"}</span>
@@ -275,7 +288,7 @@ function ProvidersInner() {
 
       {tab === "subagents" && (() => {
         const llmProvider = providers.find((p) => p.kind === "llm" && p.isDefault) ?? providers.find((p) => p.kind === "llm");
-        const modelOpts = llmProvider ? Array.from(new Set([llmProvider.model, ...(llmProvider.models ?? [])].filter(Boolean))) : [];
+        const llmProviders = providers.filter((p) => p.kind === "llm");
         return (
           <PremiumCard level={2} style={{ marginTop: "var(--spacing-24)" }}>
             <div className="settings-cardhead"><div><h3>Brain worker models</h3><div className="settings-hint">Route the brain&apos;s cognitive workers to different models on your LLM provider — the same routing mechanism as the desktop/CLI agent.</div></div></div>
@@ -284,17 +297,26 @@ function ProvidersInner() {
                 : roles.map((role) => {
                   const a = assignments[role] ?? {};
                   const set = (patch: AgentAssign) => setAssignments((m) => ({ ...m, [role]: { ...m[role], ...patch } }));
+                  const selectedProvider = llmProviders.find((provider) => provider.id === a.provider) ?? llmProvider;
+                  const modelOpts = selectedProvider ? Array.from(new Set([selectedProvider.model, ...(selectedProvider.models ?? [])].filter(Boolean))) : [];
+                  const isReview = role === "security-review" || role === "code-review";
                   return (
                     <div key={role} className="org-member">
                       <div className="org-member__id" style={{ whiteSpace: "normal" }}><strong>{ROLE_LABELS[role] ?? role}</strong><div className="settings-hint">{ROLE_DESC[role] ?? ""}</div></div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
+                      <select className="settings-select org-rolepick" style={{ minWidth: "10rem" }} value={a.provider ?? ""} onChange={(e) => set({ provider: e.target.value || undefined, model: undefined })} aria-label={`Provider for ${role}`}>
+                        <option value="">Base provider</option>{llmProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.label || provider.providerId || provider.id}</option>)}
+                      </select>
                       {modelOpts.length > 0 ? (
                         <select className="settings-select org-rolepick" style={{ minWidth: "13rem" }} value={a.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} aria-label={`Model for ${role}`}>
-                          <option value="">Default ({llmProvider.model || "provider default"})</option>
+                          <option value="">Default ({selectedProvider?.model || "provider default"})</option>
                           {modelOpts.map((m) => <option key={m} value={m}>{m}</option>)}
                         </select>
                       ) : (
                         <input className="settings-input org-rolepick" style={{ width: "13rem" }} placeholder="model (optional)" value={a.model ?? ""} onChange={(e) => set({ model: e.target.value || undefined })} />
                       )}
+                      {isReview && <><input className="settings-input" style={{ width: "7rem" }} type="number" min="1" max="500000" placeholder="max diff" value={a.maxDiffChars ?? ""} onChange={(e) => set({ maxDiffChars: e.target.value ? Number(e.target.value) : undefined })} aria-label={`Maximum diff chars for ${role}`} /><input className="settings-input" style={{ width: "7rem" }} type="number" min="1000" max="600000" placeholder="timeout ms" value={a.timeoutMs ?? ""} onChange={(e) => set({ timeoutMs: e.target.value ? Number(e.target.value) : undefined })} aria-label={`Timeout for ${role}`} /></>}
+                      </div>
                     </div>
                   );
                 })}
