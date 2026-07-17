@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Prototype Generator"
+  short_description: "Compose controllable self-contained HTML screen prototypes"
+  default_prompt: "Generate controllable self-contained HTML prototypes from this UI flow and local SVG assets."

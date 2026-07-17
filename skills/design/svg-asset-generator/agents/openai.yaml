@@ -1,0 +1,4 @@
+interface:
+  display_name: "SVG Asset Generator"
+  short_description: "Generate safe local SVG assets from UI asset requests"
+  default_prompt: "Generate local SVG assets from this ui-flow.json asset request list."

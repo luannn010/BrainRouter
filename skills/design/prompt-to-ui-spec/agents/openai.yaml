@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prompt to UI Spec"
+  short_description: "Extract screens and controllable components from a UI prompt"
+  default_prompt: "Extract a validated ui-flow.json from this UI prompt."
