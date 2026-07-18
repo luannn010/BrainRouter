@@ -14,8 +14,22 @@ type DevArtifact = DevState['devArtifacts'][number];
 type DevPlanDecision = DevState['devPlanDecisions'][number];
 type DevAttachment = DevState['devAttachments'] extends Map<string, infer V> ? V : never;
 
-/** Session-lifetime stand-in for .brainrouter/design/canvas.json. */
-let canvasDocument: unknown = undefined;
+/**
+ * Browser-preview stand-in for .brainrouter/design/canvas.json. Backed by
+ * localStorage rather than a module variable so a board survives a reload —
+ * otherwise every drag and resize is undone by refreshing the page, which is
+ * the one thing you do constantly while testing the canvas.
+ */
+const CANVAS_DOC_KEY = 'brainrouter.devbridge.canvas-document';
+function readDevCanvasDocument(): unknown {
+  try {
+    const raw = window.localStorage.getItem(CANVAS_DOC_KEY);
+    return raw ? JSON.parse(raw) as unknown : undefined;
+  } catch { return undefined; }
+}
+function writeDevCanvasDocument(document: unknown): void {
+  try { window.localStorage.setItem(CANVAS_DOC_KEY, JSON.stringify(document)); } catch { /* preview-only convenience */ }
+}
 
 export function createQueries(S: DevState): Record<string, (args: Record<string, unknown>) => unknown> {
   const {
@@ -92,10 +106,8 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
       const p = DEV_PROTOTYPES.find((x) => x.path === key || x.id === key);
       return p ? { path: p.path, title: p.title, content: p.content } : { error: `prototype not found: ${key}` };
     },
-    'design:read-canvas-document': () => ({ document: canvasDocument }),
-    // The browser preview has no disk, but it can at least keep the board's
-    // layout for the session — otherwise every drag springs back on re-render.
-    'design:write-canvas-document': (a) => { canvasDocument = a.document; return { ok: true }; },
+    'design:read-canvas-document': () => ({ document: readDevCanvasDocument() }),
+    'design:write-canvas-document': (a) => { writeDevCanvasDocument(a.document); return { ok: true }; },
     // Both of these need the real workspace (a file copy) or the real host (an
     // API key), so they say so rather than failing silently.
     'design:duplicate-prototype': () => ({ error: 'Duplicating a screen needs the desktop app.' }),
