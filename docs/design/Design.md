@@ -80,6 +80,14 @@ The center stage is a **world canvas**: a fixed viewport (`overflow:hidden`) con
 | Drag empty canvas (select tool) | Rubber-band selection |
 | `0` | Fit the selection, or the whole board |
 
+**A press is not a drag until it travels 3px**, compared as a squared radial distance the way OpenPencil's `MOVE_DRAG_START_THRESHOLD_PX` does — so a diagonal drift of 2.5,2.5 counts even though neither axis reaches 3. Below the threshold nothing moves, nothing is written to the canvas document, and (for shapes) no undo step is recorded: the drift in an ordinary trackpad click used to nudge whatever you were only trying to select. The same gate guards both drag paths, screens and annotation shapes.
+
+**Shift locks a drag to one axis**, the dominant one, with a tie resolving to horizontal so the result is always axis-aligned. This goes beyond the OpenPencil reference, which uses shift for constrain-proportions on resize and 15° rotation snapping but has no axis lock on move.
+
+**A dragged screen snaps to its neighbours**, not only to the grid. Threshold 5 world units, and the five candidate pairs per axis that OpenPencil uses: near↔near, near↔far, far↔near, far↔far, and centre↔centre. Edges pair with edges and centres with centres — an edge snapping to a centre would jump the box onto a line that means nothing to it. Only screens *not* travelling with the drag are candidates, and the correction is applied to the whole selection so a multi-drag keeps its shape. Guides are magenta rather than the accent, again as OpenPencil does, so a guide never reads as a selection edge; they span both boxes rather than only their overlap, because two screens sharing a left edge but far apart vertically have no overlap to draw.
+
+**Clicking empty canvas deselects everything** — screens and shapes together. Clearing only the screen selection left a shape selected with nothing highlighted to say so, while the inspector went on editing it.
+
 **Which parts of a screen you can grab** depends on whether it is the live one. A non-live screen is a picture — its snapshot iframe is `pointer-events:none`, so its whole body drags. The live screen's body is the running prototype and has to stay clickable, so that one moves by its title bar. Clicking a screen makes it live, so the first drag of a screen comes from its body and later ones from its title bar.
 
 Screen **chrome is counter-scaled** by the canvas zoom: the title bar holds 22px and the resize handles 10px on screen whether the canvas is at 400% or 10%. Without that, the title bar — the only way to move the live screen — shrank with the zoom and became unhittable at 5px on a zoomed-out board.
@@ -144,7 +152,13 @@ Every field is seeded from the element's **measured** computed style, read out o
 
 **The browser channel carries data, never code.** A prototype ships `default-src 'none'; script-src 'unsafe-inline'`, which permits the injected picker's inline `<script>` but *not* `eval` — so posting a snippet for the guest to evaluate fails silently and every read comes back `null`. Measure therefore posts `{__brpMeasure:{id,ref,props}}` and apply posts `{__brpApply:{ops}}` (from `buildApplyPayload`, already resolved to `[property, value]` pairs); the guest's own CSP-approved handler does the work. Electron is exempt because `executeJavaScript` is injected by the embedder rather than by the document, so `buildApplyScript` still serves the `<webview>`. Loosening the prototype CSP to make `eval` work is not an option — it is the sandbox boundary for untrusted generated HTML.
 
-Code exposes the semantic tag, stable ref, testid, child count, measured size, computed position, and text summary. AI hands the selected element and draft context to Fix Chat.
+Code exposes the semantic tag, stable ref, testid, child count, measured size, computed position, and text summary. AI hands the selected element and draft context to Fix Chat. **Both describe the prototype's HTML, which a canvas shape does not have**, so with a shape selected they say that and point at Inspect. They used to be gated on there being a DOM element while the empty state was gated on *not* being in shape mode, which left the whole rail blank — a dead end with nothing to explain it.
+
+**A disagreeing multi-selection reads `Mixed`.** Every field is computed across the whole selection, not read off whichever layer sorted first: showing one member's value as though it spoke for the rest meant editing it silently overwrote the others with a number the user never saw. `Mixed` renders as an *empty input with a `Mixed` placeholder*, as OpenPencil's `NumberField` does — that keeps `type="number"` legal, and typing replaces cleanly instead of editing a label. It is never committed, since `Number("Mixed")` is `NaN`. A field whose members agree shows the agreed value, so two shapes both at Y 60 read `60`, not `Mixed`.
+
+**Numeric fields are drag-to-scrub**: press anywhere on the field and drag horizontally to change the value, with OpenPencil's 2px threshold so a plain click still focuses the input for typing. Movement is rounded to whole steps, because half a pixel of pointer travel must not leave `0.5` in a field that measures pixels.
+
+The canvas-shape panel orders its sections as OpenPencil's `DesignPanel` does — Position, Appearance, Typography, Fill, Stroke — and drops Typography from a multi-selection rather than showing it for one member.
 
 ### How composite CSS is expressed
 
