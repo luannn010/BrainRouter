@@ -35,7 +35,8 @@ function off(){on=false;if(hl)hl.style.display='none';if(tip)tip.style.display='
 document.addEventListener('mousemove',move,true);
 document.addEventListener('click',pick,true);
 document.addEventListener('keydown',key,true);
-window.addEventListener('message',function(e){var d=e.data||{};if(d.__brpPick==='on')enable();else if(d.__brpPick==='off')off();});
+function run(code){try{return (0,eval)(code);}catch(err){return null;}}
+window.addEventListener('message',function(e){var d=e.data||{};if(d.__brpPick==='on')enable();else if(d.__brpPick==='off')off();else if(d.__brpMeasure)parent.postMessage({__brpMeasured:{id:d.__brpMeasure.id,value:run(d.__brpMeasure.code)}},'*');else if(d.__brpEval)run(d.__brpEval);});
 })();</script>`;
 
 function prototypeProxy(): Plugin {
