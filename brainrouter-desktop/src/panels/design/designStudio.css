@@ -481,3 +481,12 @@
 .design-studio .ds-viewerror { margin:auto; max-width:420px; padding:20px; display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
 .design-studio .ds-viewerror-msg { font:12px var(--ds-mono); color:var(--ds-text-1); word-break:break-word; }
 .design-studio .ds-viewerror-hint { font-size:12px; color:var(--ds-text-3); }
+
+/* Alignment guides during a drag. Magenta, not the accent, so they never read
+   as a selection edge — the same reason OpenPencil gives snap guides their own
+   colour. The line lives in world space, so its 1px thickness is scaled by the
+   world transform; that reads as a hairline across the zoom range the studio
+   allows, and counter-scaling it made it disappear when zoomed out. */
+.design-studio .ds-guide { position:absolute; pointer-events:none; z-index:1200; background:#FF008F; }
+.design-studio .ds-guide--x { width:1px; }
+.design-studio .ds-guide--y { height:1px; }

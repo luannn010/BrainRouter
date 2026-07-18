@@ -22,6 +22,7 @@ import { MIN_SCREEN, isResizeHandle, resizeRect } from '../../lib/design/screenR
 import { useCanvasDocument } from '../../lib/design/useCanvasDocument.js';
 import { useCanvasFrames } from '../../lib/design/useCanvasFrames.js';
 import { constrainDelta, passedThreshold } from '../../lib/design/dragGesture.js';
+import { snapToNeighbours, type Guide } from '../../lib/design/alignmentGuides.js';
 import type { CanvasNode } from '../../lib/design/canvasModel.js';
 import type { MeasuredElement } from '../../lib/design/designMeasure.js';
 import type { ConstraintBox } from '../../lib/design/designConstraints.js';
@@ -84,6 +85,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   const [selection, setSelection] = useState<Selection>([]);
   const [marquee, setMarquee] = useState<ViewBounds | null>(null);
   const [dragNodes, setDragNodes] = useState<CanvasNode[] | null>(null);
+  /** Alignment lines for the in-flight drag; empty whenever nothing is moving. */
+  const [guides, setGuides] = useState<Guide[]>([]);
   /** Canvas-level right-click menu (screens and empty space). */
   const [screenMenu, setScreenMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
   const [screenNotice, setScreenNotice] = useState<string | null>(null);
@@ -484,6 +487,12 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       const origins = new Map(nodes.filter((item) => moving.has(item.prototypeId)).map((item) => [item.prototypeId, item.position]));
       const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
       const start = { x: e.clientX, y: e.clientY, scale: viewRef.current.scale };
+      // Snapping targets are the screens NOT travelling with this drag —
+      // snapping to something that is moving with you is meaningless.
+      const anchor = origins.get(id);
+      const grabbed = nodes.find((item) => item.prototypeId === id);
+      const still = nodes.filter((item) => !moving.has(item.prototypeId))
+        .map((item) => ({ x: item.position.x, y: item.position.y, w: item.width, h: item.height }));
       let latest = nodes;
       let dragging = false;
       const onMove = (ev: PointerEvent): void => {
@@ -496,14 +505,26 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         const locked = constrainDelta(rawX, rawY, ev.shiftKey);
         const dx = locked.dx / start.scale;
         const dy = locked.dy / start.scale;
+        // Snap the grabbed screen to its neighbours, then shift the WHOLE
+        // selection by that correction so a multi-drag keeps its shape.
+        let adjustX = 0;
+        let adjustY = 0;
+        if (anchor && grabbed) {
+          const snapped = snapToNeighbours({ x: anchor.x + dx, y: anchor.y + dy, w: grabbed.width, h: grabbed.height }, still);
+          adjustX = snapped.x - (anchor.x + dx);
+          adjustY = snapped.y - (anchor.y + dy);
+          setGuides(snapped.guides);
+        }
         latest = nodes.map((item) => {
           const origin = origins.get(item.prototypeId);
-          return origin ? { ...item, position: { x: snapTo(origin.x + dx, grid), y: snapTo(origin.y + dy, grid) } } : item;
+          return origin ? { ...item, position: { x: snapTo(origin.x + dx + adjustX, grid), y: snapTo(origin.y + dy + adjustY, grid) } } : item;
         });
         setDragNodes(latest);
       };
       const onUp = (): void => {
         setDragNodes(null);
+        // A guide left on screen after release reads as a broken render.
+        setGuides([]);
         // A click that never crossed the threshold moved nothing, so it has
         // nothing to save — writing here rewrote the board on every selection.
         if (dragging) saveNodes(latest);
@@ -704,6 +725,10 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
               onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
           </div> : null}
           {marquee ? <div className="ds-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} /> : null}
+          {guides.map((guide) => <div key={`${guide.axis}${guide.at}`} className={`ds-guide ds-guide--${guide.axis}`}
+            style={guide.axis === 'x'
+              ? { left: guide.at, top: guide.from, height: guide.to - guide.from }
+              : { top: guide.at, left: guide.from, width: guide.to - guide.from }} />)}
         </div>
         {!protos.selected && <div className="ds-empty">No flow selected. Pick one on the left — the sample flows load automatically.</div>}
         {screenNotice ? <p className="ds-stage-notice" role="status">{screenNotice}<button type="button" className="ds-iconbtn" onClick={() => setScreenNotice(null)}>Dismiss</button></p> : null}
