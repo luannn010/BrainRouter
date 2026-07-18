@@ -3339,6 +3339,41 @@ export function buildQueries(ctx: HostContext): Record<string, QueryHandler> {
         try { return design.writeCanvasDocument(args.document); }
         catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
       },
+      'design:duplicate-prototype': (args) => {
+        try {
+          const id = typeof args.id === 'string' ? args.id : '';
+          if (!id) return { error: 'missing id' };
+          return design.duplicatePrototype(id);
+        } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      },
+      // One-shot completion for the Design canvas' "create component with chat".
+      // Deliberately NOT start-turn: this must not run tools, write files, or
+      // land in the visible transcript — it just returns markup.
+      'design:quick-generate': async (args) => {
+        const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+        if (!prompt) return { html: '', error: 'Describe the component first.' };
+        const llm = llmForSession(getActiveAgent().sessionKey);
+        if (!llm || (!llm.apiKey && (llm.provider ?? 'openai') === 'openai')) {
+          return { html: '', error: 'No model configured — set a provider/model (and API key) in Settings.' };
+        }
+        const system = [
+          'You design single UI components as self-contained HTML.',
+          'Return ONLY the markup for one component — no preamble, no explanation, no code fences,',
+          'no <html>, <head> or <body> wrapper, and no <script>.',
+          'Inline every style with a style="" attribute. Use a dark, precise aesthetic:',
+          'background #14171A, text #ECEFF2, muted #9BA3AC, accent #34C28E, radius 10px.',
+        ].join(' ');
+        try {
+          const resp = await callOpenAI(llm, [{ role: 'system', content: system }, { role: 'user', content: prompt }], [], { effort: 'low' });
+          const raw = ((resp?.content as string) ?? '').trim().replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim();
+          // A model that ignores the no-script rule must not have its output
+          // stored and re-rendered on the canvas.
+          if (/<script\b/i.test(raw)) return { html: '', error: 'The model returned a script tag, which is not allowed in a component.' };
+          return raw ? { html: raw } : { html: '', error: 'The model returned nothing.' };
+        } catch (e) {
+          return { html: '', error: `Model call failed: ${e instanceof Error ? e.message : String(e)}` };
+        }
+      },
       'design:read-brand-overrides': () => {
         try { return design.readBrandOverrides(); }
         catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }

@@ -291,6 +291,24 @@
 .design-studio .ds-stage-shell .ds-stage { position:absolute; inset:0; width:auto; height:auto; margin:0; border:0; border-radius:0; }
 .design-studio .ds-marquee { position:absolute; border:1px solid var(--ds-accent); background:var(--ds-accent-wash); pointer-events:none; }
 .design-studio .ds-stage-shell > .ds-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; }
+/* A canvas action that needs the desktop app says so here rather than failing silently. */
+.design-studio .ds-stage-notice { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:6; display:flex; align-items:center; gap:10px; margin:0; padding:8px 10px 8px 14px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-surface-2); color:var(--ds-text); font-size:12px; box-shadow:var(--ds-shadow-sm); }
+/* --- Baked vector geometry and masks --- */
+.design-studio .ds-anno--path svg { position:absolute; inset:0; width:100%; height:100%; }
+.design-studio .ds-anno--path svg path { fill:var(--ds-accent); stroke:none; }
+/* A mask is a boundary, not a picture — it draws as an outline and clips its siblings. */
+.design-studio .ds-anno--mask { opacity:.5; }
+.design-studio .ds-anno--mask svg *, .design-studio .ds-anno--mask svg path { fill:none; stroke:var(--ds-accent); stroke-dasharray:4 3; }
+/* --- Quick component chat --- */
+.design-studio .ds-quickchat-scrim { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
+.design-studio .ds-quickchat { width:min(420px,92vw); display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-panel); background:var(--ds-surface); box-shadow:0 24px 60px rgba(0,0,0,.55); }
+.design-studio .ds-quickchat-head { display:flex; align-items:baseline; gap:10px; }
+.design-studio .ds-quickchat-head small { margin-left:auto; color:var(--ds-text-3); font:10px var(--ds-mono); }
+.design-studio .ds-quickchat-input { resize:vertical; padding:8px 10px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-bg); color:var(--ds-text); font:13px inherit; }
+.design-studio .ds-quickchat-input:focus-visible { outline:2px solid var(--ds-accent); outline-offset:1px; }
+.design-studio .ds-quickchat-error { margin:0; color:var(--ds-danger); font-size:12px; }
+.design-studio .ds-quickchat-actions { display:flex; justify-content:flex-end; gap:8px; }
+.design-studio .ds-iconbtn.is-primary { border-color:var(--ds-accent); color:var(--ds-accent); }
 /* --- Annotation layer (Frame / Shape / Text tools) — host DOM above the
        preview surface; never part of the prototype's HTML. --- */
 .design-studio .ds-anno-layer { position:absolute; inset:0; z-index:3; pointer-events:none; user-select:none; }

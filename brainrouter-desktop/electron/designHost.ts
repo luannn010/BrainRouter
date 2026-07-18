@@ -22,6 +22,9 @@ export interface DesignHost {
   readBrandOverrides(): { overrides?: unknown; error?: string };
   writeBrandOverrides(overrides: unknown): { ok: true } | { ok: false; error: string };
   ensureSeed(): { path: string; created: boolean };
+  /** Copy a prototype to a fresh id. Duplicating a screen on the canvas makes a
+   *  real, separately-editable screen rather than a second view of one file. */
+  duplicatePrototype(id: string): { id: string; path: string } | { error: string };
 }
 
 /** Canvas guards — never flood the renderer with a huge or unbounded frame set. */
@@ -89,6 +92,18 @@ export function createDesignHost(workspaceRoot: string): DesignHost {
     return frames;
   };
 
+  /** `<id>-copy`, then `-copy-2`, … — the first that isn't taken on disk. */
+  const freeCopyId = (id: string): string | null => {
+    const base = `${id}-copy`;
+    for (let n = 1; n <= 50; n += 1) {
+      const candidate = n === 1 ? base : `${base}-${n}`;
+      const abs = resolveAuthorized(candidate);
+      if (!abs) return null;
+      if (!fs.existsSync(abs)) return candidate;
+    }
+    return null;
+  };
+
   return {
     listPrototypes() {
       // Drop `content` — the picker only needs metadata.
@@ -150,6 +165,22 @@ export function createDesignHost(workspaceRoot: string): DesignHost {
       fs.mkdirSync(protoDir, { recursive: true });
       fs.writeFileSync(abs, SEED_HTML, 'utf8');
       return { path: rel, created: true };
+    },
+
+    duplicatePrototype(id) {
+      const source = resolveAuthorized(id);
+      if (!source) return { error: `not an authorized prototype: ${id}` };
+      let content = '';
+      try { content = fs.readFileSync(source, 'utf8'); }
+      catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
+      const copyId = freeCopyId(id);
+      if (!copyId) return { error: 'could not find a free name for the copy' };
+      const target = resolveAuthorized(copyId);
+      if (!target) return { error: 'could not resolve the copy path' };
+      try {
+        writeAtomic(target, content);
+        return { id: copyId, path: `proto/${copyId}.html` };
+      } catch (err) { return { error: err instanceof Error ? err.message : String(err) }; }
     },
   };
 }

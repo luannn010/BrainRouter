@@ -3,10 +3,16 @@ import { Icon } from '../../icons.js';
 import { bridgeQuery } from '../../lib/bridgeQuery.js';
 import { extractDesignElements, resolvePickedElement, type DesignElement, type DraftOperation } from '../../lib/design/designElements.js';
 import {
-  ANNOTATIONS_STORAGE_KEY, annotationsKey, bringToFront, duplicateAnnotation,
-  flipAnnotation, parseAnnotationStore, pasteAnnotation, removeAnnotation,
-  sendToBack, serializeAnnotationStore, toggleAnnotationFlag, type DesignAnnotation,
+  ANNOTATIONS_STORAGE_KEY, annotationsKey, boundsOf, bringToFront, createAnnotation,
+  duplicateAnnotation, flipAnnotation, frameSelection, groupAnnotations, parseAnnotationStore,
+  pasteAnnotation, sendToBack, serializeAnnotationStore, setMask, ungroupAnnotations,
+  type DesignAnnotation,
 } from '../../lib/design/designAnnotations.js';
+import { DEFAULT_AUTO_LAYOUT, autoLayoutAnnotations } from '../../lib/design/designAutoLayout.js';
+import { flattenToPath } from '../../lib/design/designOutline.js';
+import { addComponent, componentFromHtml, componentFromSelection, uniqueComponentName } from '../../lib/design/designComponents.js';
+import { DesignContextMenu, type MenuAction, type MenuTarget } from './DesignContextMenu.js';
+import { QuickComponentChat } from './QuickComponentChat.js';
 import { isEditableTarget, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
 import { fitBounds, panBy, screenToWorld, snapTo, wheelGesture, zoomAt, type ViewBounds, type Viewport } from '../../lib/design/canvasViewport.js';
 import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, toggleSelection, type SelectableItem, type Selection } from '../../lib/design/designSelection.js';
@@ -48,7 +54,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [operations, setOperations] = useState<DraftOperation[]>([]);
   const [annotations, setAnnotations] = useState<DesignAnnotation[]>([]);
-  const [selectedAnnoId, setSelectedAnnoId] = useState<string | null>(null);
+  const [annoIds, setAnnoIds] = useState<string[]>([]);
   const [frameKind, setFrameKind] = useState<FrameKind>('frame');
   const [shapeKind, setShapeKind] = useState<ShapeKind>('rectangle');
   // Session clipboard for annotations (never the OS clipboard).
@@ -71,6 +77,12 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   const [selection, setSelection] = useState<Selection>([]);
   const [marquee, setMarquee] = useState<ViewBounds | null>(null);
   const [dragNodes, setDragNodes] = useState<CanvasNode[] | null>(null);
+  /** Canvas-level right-click menu (screens and empty space). */
+  const [screenMenu, setScreenMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  const [screenNotice, setScreenNotice] = useState<string | null>(null);
+  const [quickChatOpen, setQuickChatOpen] = useState(false);
+  /** Screens copy as ids — pasting one duplicates its prototype file. */
+  const [screenClipboard, setScreenClipboard] = useState<string[]>([]);
   const viewRef = useRef(view);
   viewRef.current = view;
   const spaceRef = useRef(false);
@@ -93,10 +105,63 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
 
   const saveNodes = (next: CanvasNode[]): void => canvas.save({ ...canvas.document, nodes: next });
 
+  // --- screen-side actions (the annotation-side ones live in StageOverlay) ---
+  const mapScreens = (ids: readonly string[], fn: (node: CanvasNode) => CanvasNode): void => {
+    if (ids.length === 0) return;
+    saveNodes(nodes.map((node) => ids.includes(node.prototypeId) ? fn(node) : node));
+  };
+  const toggleScreenFlag = (ids: readonly string[], flag: 'hidden' | 'locked'): void =>
+    mapScreens(ids, (node) => ({ ...node, [flag]: node[flag] ? undefined : true }));
+  const flipScreens = (ids: readonly string[], key: 'flipX' | 'flipY'): void =>
+    mapScreens(ids, (node) => ({ ...node, [key]: node[key] ? undefined : true }));
+  const raiseScreens = (ids: readonly string[], to: 'front' | 'back'): void => {
+    if (ids.length === 0) return;
+    const z = nodes.map((node) => node.zIndex);
+    const edge = to === 'front' ? Math.max(0, ...z) + 1 : Math.min(0, ...z) - 1;
+    mapScreens(ids, (node) => ({ ...node, zIndex: edge }));
+  };
+  /** A screen leaves the board; its HTML file is never deleted. */
+  const removeScreens = (ids: readonly string[]): void => {
+    if (ids.length === 0) return;
+    canvas.save({ ...canvas.document, hiddenPrototypeIds: [...new Set([...canvas.document.hiddenPrototypeIds, ...ids])] });
+    setSelection([]);
+  };
+  const duplicateScreens = async (ids: readonly string[]): Promise<void> => {
+    for (const id of ids) {
+      const result = await bridgeQuery<{ id?: string; error?: string }>('design:duplicate-prototype', { id })
+        .catch((): { id?: string; error?: string } => ({ error: 'Could not reach the workspace.' }));
+      if (result?.error || !result?.id) { setScreenNotice(result?.error ?? 'Could not duplicate that screen.'); return; }
+    }
+    protos.refresh();
+  };
+
+  const saveComponents = (component: ReturnType<typeof componentFromHtml>): void => {
+    canvas.save({ ...canvas.document, components: addComponent(canvas.document.components, component) });
+    setResource('components');
+  };
+  const createComponentFrom = (members: readonly DesignAnnotation[]): void => {
+    if (members.length === 0) return;
+    const base = members.length === 1 ? (members[0].label.trim() || 'Component') : 'Component';
+    saveComponents(componentFromSelection(uniqueComponentName(canvas.document.components, base), members));
+  };
+  const flattenSelection = (members: readonly DesignAnnotation[]): void => {
+    const bounds = boundsOf(members);
+    const d = flattenToPath(members);
+    if (!bounds || !d) return;
+    const ids = members.map((a) => a.id);
+    const baked: DesignAnnotation = { ...createAnnotation('path', bounds, { label: 'Flattened' }), path: d };
+    changeAnnotations([...annotations.filter((a) => !ids.includes(a.id)), baked]);
+    setAnnoIds([baked.id]);
+  };
+  const addAutoLayout = (container: DesignAnnotation): void => {
+    const withLayout = annotations.map((a) => a.id === container.id ? { ...a, autoLayout: a.autoLayout ?? DEFAULT_AUTO_LAYOUT } : a);
+    changeAnnotations(autoLayoutAnnotations(withLayout, container.id));
+  };
+
   useEffect(() => {
     let active = true;
     setSelectedRef(null);
-    setSelectedAnnoId(null);
+    setAnnoIds([]);
     if (!protos.selected) { setFrame(null); setAnnotations([]); return () => { active = false; }; }
     void bridgeQuery<{ path?: string; content?: string; error?: string }>('design:read-prototype', { id: protos.selected.id }).then((result) => {
       if (!active) return;
@@ -218,30 +283,46 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       // Space arms hand-panning for as long as it is held, on any tool.
       if (e.code === 'Space') { spaceRef.current = true; e.preventDefault(); return; }
       const k = e.key.toLowerCase();
-      const selected = selectedAnnoId ? annotations.find((a) => a.id === selectedAnnoId) ?? null : null;
-      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-        if (e.shiftKey && k === 'h' && selected) { changeAnnotations(toggleAnnotationFlag(annotations, selected.id, 'hidden')); setSelectedAnnoId(null); e.preventDefault(); }
-        else if (e.shiftKey && k === 'l' && selected) { changeAnnotations(toggleAnnotationFlag(annotations, selected.id, 'locked')); e.preventDefault(); }
+      const chosen = annotations.filter((a) => annoIds.includes(a.id));
+      const selected = chosen.length > 0 ? chosen[chosen.length - 1] : null;
+      const ids = chosen.map((a) => a.id);
+      const screens = idsOfKind(selection, 'screen');
+      if ((e.ctrlKey || e.metaKey) && e.altKey) {
+        // Ctrl+Alt+G frames, Ctrl+Alt+M masks, Ctrl+Alt+K makes a component.
+        if (k === 'g' && chosen.length) { const { list, id } = frameSelection(annotations, ids); changeAnnotations(list); setAnnoIds(id ? [id] : []); e.preventDefault(); }
+        else if (k === 'm' && selected?.groupId) { changeAnnotations(setMask(annotations, selected.id)); e.preventDefault(); }
+        else if (k === 'k' && chosen.length) { createComponentFrom(chosen); e.preventDefault(); }
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        if (e.shiftKey && k === 'g' && chosen.length) { changeAnnotations(ungroupAnnotations(annotations, ids)); e.preventDefault(); }
+        else if (k === 'g' && chosen.length >= 2) { changeAnnotations(groupAnnotations(annotations, ids).list); e.preventDefault(); }
+        else if (e.shiftKey && k === 'h') { toggleScreenFlag(screens, 'hidden'); if (chosen.length) { changeAnnotations(annotations.map((a) => ids.includes(a.id) ? { ...a, hidden: !a.hidden } : a)); setAnnoIds([]); } e.preventDefault(); }
+        else if (e.shiftKey && k === 'l') { toggleScreenFlag(screens, 'locked'); if (chosen.length) changeAnnotations(annotations.map((a) => ids.includes(a.id) ? { ...a, locked: !a.locked } : a)); e.preventDefault(); }
         else if (k === 'c' && selected) { setClipboard({ ...selected }); e.preventDefault(); }
-        else if (k === 'x' && selected) { setClipboard({ ...selected }); changeAnnotations(removeAnnotation(annotations, selected.id)); setSelectedAnnoId(null); e.preventDefault(); }
-        else if (k === 'v' && clipboard) { const { list, id } = pasteAnnotation(annotations, clipboard); changeAnnotations(list); setSelectedAnnoId(id); e.preventDefault(); }
-        else if (k === 'd' && selected) { const { list, id } = duplicateAnnotation(annotations, selected.id); changeAnnotations(list); setSelectedAnnoId(id); e.preventDefault(); }
+        else if (k === 'x' && selected) { setClipboard({ ...selected }); changeAnnotations(annotations.filter((a) => !ids.includes(a.id))); setAnnoIds([]); e.preventDefault(); }
+        else if (k === 'v' && clipboard) { const { list, id } = pasteAnnotation(annotations, clipboard); changeAnnotations(list); setAnnoIds([id]); e.preventDefault(); }
+        else if (k === 'd' && selected) { const { list, id } = duplicateAnnotation(annotations, selected.id); changeAnnotations(list); setAnnoIds(id ? [id] : []); e.preventDefault(); }
         return;
       }
-      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (e.altKey && e.shiftKey && k === 'f' && chosen.length) { flattenSelection(chosen); e.preventDefault(); return; }
+      if (e.altKey || e.repeat) return;
       if (e.shiftKey) {
-        if (k === 'h' && selected) { changeAnnotations(flipAnnotation(annotations, selected.id, 'x')); e.preventDefault(); }
-        else if (k === 'v' && selected) { changeAnnotations(flipAnnotation(annotations, selected.id, 'y')); e.preventDefault(); }
+        if (k === 'a' && selected) { addAutoLayout(selected); e.preventDefault(); }
+        else if (k === 'h') { flipScreens(screens, 'flipX'); if (chosen.length) changeAnnotations(ids.reduce((list, id) => flipAnnotation(list, id, 'x'), annotations)); e.preventDefault(); }
+        else if (k === 'v') { flipScreens(screens, 'flipY'); if (chosen.length) changeAnnotations(ids.reduce((list, id) => flipAnnotation(list, id, 'y'), annotations)); e.preventDefault(); }
         return;
       }
-      if (e.key === ']') { if (selected) { changeAnnotations(bringToFront(annotations, selected.id)); e.preventDefault(); } return; }
-      if (e.key === '[') { if (selected) { changeAnnotations(sendToBack(annotations, selected.id)); e.preventDefault(); } return; }
+      if (e.key === ']') { if (chosen.length) { changeAnnotations(ids.reduce((list, id) => bringToFront(list, id), annotations)); } raiseScreens(screens, 'front'); e.preventDefault(); return; }
+      if (e.key === '[') { if (chosen.length) { changeAnnotations([...ids].reverse().reduce((list, id) => sendToBack(list, id), annotations)); } raiseScreens(screens, 'back'); e.preventDefault(); return; }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selected) { changeAnnotations(removeAnnotation(annotations, selected.id)); setSelectedAnnoId(null); e.preventDefault(); }
+        if (chosen.length) { changeAnnotations(annotations.filter((a) => !ids.includes(a.id))); setAnnoIds([]); }
+        else if (screens.length) removeScreens(screens);
+        e.preventDefault();
         return;
       }
       if (e.key === '0') { fitAll(); e.preventDefault(); return; }
-      if (e.key === 'Escape') { setSelectedAnnoId(null); setSelection([]); setTool('select'); return; }
+      if (e.key === 'Escape') { setAnnoIds([]); setSelection([]); setTool('select'); return; }
       const next = toolForKey(e.key);
       if (next) {
         setTool(next.tool);
@@ -342,6 +423,48 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     window.addEventListener('pointerup', onUp);
   };
 
+  // Right-click on the canvas. Annotations handle their own right-click inside
+  // the live screen and stop propagation, so anything arriving here is a screen
+  // or empty space.
+  const onShellContextMenu = (e: React.MouseEvent<HTMLDivElement>): void => {
+    if (tool === 'inspect') return;
+    e.preventDefault();
+    const screenEl = (e.target as HTMLElement).closest<HTMLElement>('.ds-screen, .ds-live-screen');
+    const id = screenEl?.dataset.screenId ?? '';
+    const node = id ? nodes.find((item) => item.prototypeId === id) : undefined;
+    if (node && !isSelected(selection, 'screen', node.prototypeId)) setSelection(selectOnly({ kind: 'screen', id: node.prototypeId }));
+    setScreenMenu({
+      x: e.clientX,
+      y: e.clientY,
+      target: node ? { kind: 'screen', id: node.prototypeId, locked: node.locked === true } : null,
+    });
+  };
+
+  const applyScreenAction = (action: MenuAction): void => {
+    const target = screenMenu?.target;
+    const ids = target?.kind === 'screen'
+      ? (isSelected(selection, 'screen', target.id) ? idsOfKind(selection, 'screen') : [target.id])
+      : [];
+    switch (action) {
+      case 'duplicate': void duplicateScreens(ids); break;
+      case 'copy': setScreenClipboard(ids); break;
+      case 'cut': setScreenClipboard(ids); removeScreens(ids); break;
+      case 'paste': void duplicateScreens(screenClipboard); break;
+      case 'delete': removeScreens(ids); break;
+      case 'front': raiseScreens(ids, 'front'); break;
+      case 'back': raiseScreens(ids, 'back'); break;
+      case 'toggle-hidden': toggleScreenFlag(ids, 'hidden'); break;
+      case 'toggle-locked': toggleScreenFlag(ids, 'locked'); break;
+      case 'flip-x': flipScreens(ids, 'flipX'); break;
+      case 'flip-y': flipScreens(ids, 'flipY'); break;
+      case 'show-all': canvas.save({ ...canvas.document, hiddenPrototypeIds: [] }); break;
+      case 'create-component-chat': setQuickChatOpen(true); break;
+      // Group/frame/mask/flatten/outline are annotation concepts; a screen is a
+      // whole document, so those rows stay disabled for a screen target.
+      default: break;
+    }
+  };
+
   const setZoomPercent = (percent: number): void => {
     const shell = shellRef.current;
     if (!shell) return;
@@ -407,7 +530,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer} />
     <main className="ds-editor-stage">
       <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => applyDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
-      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown}>
+      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu}>
         <div className="ds-design-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
           {shownNodes.map((node) => <DesignScreen key={node.prototypeId} node={node}
             title={titleById.get(node.prototypeId) ?? node.prototypeId}
@@ -417,14 +540,25 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
           {activeNode ? <div className={`ds-live-screen${isSelected(selection, 'screen', activeNode.prototypeId) ? ' is-selected' : ''}`} data-screen-id={activeNode.prototypeId}
             style={{ left: activeNode.position.x, top: activeNode.position.y, width: activeNode.width, height: activeNode.height, zIndex: LIVE_LAYER_Z }}>
             <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}
-              overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedId={selectedAnnoId}
-                clipboard={clipboard} onSelect={setSelectedAnnoId} onChange={changeAnnotations} onClipboardChange={setClipboard} />}
+              overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedIds={annoIds}
+                clipboard={clipboard} onSelect={setAnnoIds} onChange={changeAnnotations} onClipboardChange={setClipboard}
+                onCreateComponent={createComponentFrom} onQuickChat={() => setQuickChatOpen(true)} />}
               onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
           </div> : null}
           {marquee ? <div className="ds-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} /> : null}
         </div>
         {!protos.selected && <div className="ds-empty">No flow selected. Pick one on the left — the sample flows load automatically.</div>}
+        {screenNotice ? <p className="ds-stage-notice" role="status">{screenNotice}<button type="button" className="ds-iconbtn" onClick={() => setScreenNotice(null)}>Dismiss</button></p> : null}
         <CanvasRulers view={view} width={shellSize?.w ?? 0} height={shellSize?.h ?? 0} />
+        {screenMenu ? <DesignContextMenu x={screenMenu.x} y={screenMenu.y} target={screenMenu.target}
+          selectionCount={idsOfKind(selection, 'screen').length}
+          clipboardFilled={screenClipboard.length > 0}
+          hiddenCount={canvas.document.hiddenPrototypeIds.length}
+          onAction={applyScreenAction}
+          onClose={() => setScreenMenu(null)} /> : null}
+        {quickChatOpen ? <QuickComponentChat
+          onGenerated={(html, name) => saveComponents(componentFromHtml(uniqueComponentName(canvas.document.components, name || 'Component'), html, { w: 320, h: 200 }))}
+          onClose={() => setQuickChatOpen(false)} /> : null}
       </div>
       <DesignBottomToolbar tool={tool} onToolChange={setTool} frameKind={frameKind} shapeKind={shapeKind}
         onFrameKindChange={setFrameKind} onShapeKindChange={setShapeKind}

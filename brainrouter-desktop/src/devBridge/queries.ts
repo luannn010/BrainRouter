@@ -14,6 +14,9 @@ type DevArtifact = DevState['devArtifacts'][number];
 type DevPlanDecision = DevState['devPlanDecisions'][number];
 type DevAttachment = DevState['devAttachments'] extends Map<string, infer V> ? V : never;
 
+/** Session-lifetime stand-in for .brainrouter/design/canvas.json. */
+let canvasDocument: unknown = undefined;
+
 export function createQueries(S: DevState): Record<string, (args: Record<string, unknown>) => unknown> {
   const {
     DEMO_DIFF, prefs, sessionModes, effectivePrefs, resolvedModel, SESSIONS_BY_ROOT, devMeta, mergeMeta, devGroups, devSchedules, devWorktrees, devRequirements, devAnnotations, devAnnotMarkdown, devArtifacts, devPlanState, trackCat, mkItem, devTrack, devSprints, devModules, devViews, devFindItem, devAutomations, devPlanDecisions, DEV_DIFF_HASH, devRunReview, devGate, devRules, devProviders, devCliKnobs, devExtensions, devGithub, devConnectorCatalog, devSlimDocuments, devConnectorPermissionCounts, devConnectorRuns, devServers, devFiles, devWorkflows, devShortcuts, devFileRead, devAttachments, attachmentKind, attachmentMime, decodePreview, attachmentContext,
@@ -81,8 +84,14 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
       const p = DEV_PROTOTYPES.find((x) => x.path === key || x.id === key);
       return p ? { path: p.path, title: p.title, content: p.content } : { error: `prototype not found: ${key}` };
     },
-    'design:read-canvas-document': () => ({ document: undefined }),
-    'design:write-canvas-document': () => ({ ok: true }),
+    'design:read-canvas-document': () => ({ document: canvasDocument }),
+    // The browser preview has no disk, but it can at least keep the board's
+    // layout for the session — otherwise every drag springs back on re-render.
+    'design:write-canvas-document': (a) => { canvasDocument = a.document; return { ok: true }; },
+    // Both of these need the real workspace (a file copy) or the real host (an
+    // API key), so they say so rather than failing silently.
+    'design:duplicate-prototype': () => ({ error: 'Duplicating a screen needs the desktop app.' }),
+    'design:quick-generate': () => ({ html: '', error: 'Generating a component needs the desktop app.' }),
     'runtime-runner-info': () => ({ mode: 'in-process', remoteUrl: null }),
     'runtime-runner-status': (a) => ({ runtimeId: String(a.runtimeId ?? ''), status: 'unknown', live: false }),
     'runtime-previews-list': () => ({
