@@ -1,6 +1,7 @@
 // brainrouter-desktop/src/panels/DesignStudioPanel.tsx
 import React, { useCallback, useRef, useState } from 'react';
 import { Icon } from '../icons.js';
+import { ResettableBoundary } from '../components/primitives/ResettableBoundary.js';
 import './design/designStudio.css';
 import { CanvasView } from './design/CanvasView.js';
 import { BrandsView } from './design/BrandsView.js';
@@ -69,21 +70,27 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
 
       <div className="ds-body">
         <div className="ds-view" role="tabpanel">
-          {tab === 'canvas' && <CanvasView key={canvasKey} onOpenInDesigns={openInDesigns} />}
-          {tab === 'brands' && <BrandsView branch={branch} commit={null} iso={new Date().toISOString()} />}
-          {tab === 'designs' && (
-            <DesignsView
-              workspaceRoot={workspaceRoot}
-              protos={protos}
-              device={device}
-              setDevice={setDevice}
-              previewRef={previewRef}
-              picked={picked}
-              onPick={setPicked}
-              onOpenAi={() => setChatOpen(true)}
-              onDraftContextChange={setDraftContext}
-            />
-          )}
+          {/* One boundary per view, keyed by the tab. The app-wide boundary in
+              main.tsx replaces the whole window, so a throw in any one of these
+              took the nav down with it and "Dismiss" re-rendered the same broken
+              view — errors on every tab switch, with no way back but a reload. */}
+          <ResettableBoundary resetKey={tab} label={TABS.find((t) => t.id === tab)?.label ?? 'This view'}>
+            {tab === 'canvas' && <CanvasView key={canvasKey} onOpenInDesigns={openInDesigns} />}
+            {tab === 'brands' && <BrandsView branch={branch} commit={null} iso={new Date().toISOString()} />}
+            {tab === 'designs' && (
+              <DesignsView
+                workspaceRoot={workspaceRoot}
+                protos={protos}
+                device={device}
+                setDevice={setDevice}
+                previewRef={previewRef}
+                picked={picked}
+                onPick={setPicked}
+                onOpenAi={() => setChatOpen(true)}
+                onDraftContextChange={setDraftContext}
+              />
+            )}
+          </ResettableBoundary>
         </div>
 
         {chatOpen && (

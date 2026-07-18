@@ -186,6 +186,13 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     changeAnnotations(autoLayoutAnnotations(withLayout, container.id));
   };
 
+  // Undo/redo covers the annotation layer — the thing you draw and can lose.
+  // Prototype drafts have their own explicit Save/Revert and stay out of it.
+  // Declared above the effect that resets it: the effect only reached it
+  // because effects run after the render pass, and moving that code into
+  // render would have turned the forward reference into a TDZ ReferenceError.
+  const historyRef = useRef(emptyHistory<DesignAnnotation[]>([]));
+
   useEffect(() => {
     let active = true;
     setSelectedRef(null);
@@ -296,9 +303,6 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     return () => { disposed = true; stop?.(); };
   }, [tool, elements, onPick, previewReady, pickCycle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Undo/redo covers the annotation layer — the thing you draw and can lose.
-  // Prototype drafts have their own explicit Save/Revert and stay out of it.
-  const historyRef = useRef(emptyHistory<DesignAnnotation[]>([]));
   const persistAnnotations = (next: DesignAnnotation[]): void => {
     setAnnotations(next);
     if (!protos.selected) return;
