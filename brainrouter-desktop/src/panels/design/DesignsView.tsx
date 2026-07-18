@@ -549,7 +549,12 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     };
     const onUp = (): void => {
       setMarquee((box) => {
-        setSelection(box && (box.w > 2 || box.h > 2) ? marqueeSelect(screenItems, box) : []);
+        const dragged = Boolean(box && (box.w > 2 || box.h > 2));
+        setSelection(dragged && box ? marqueeSelect(screenItems, box) : []);
+        // A click on empty canvas deselects EVERYTHING. Clearing only the
+        // screen selection left a shape selected with nothing highlighted to
+        // say so, while the inspector went on editing it.
+        if (!dragged) setAnnoIds([]);
         return null;
       });
       window.removeEventListener('pointermove', onMove);
