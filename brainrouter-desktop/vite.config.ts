@@ -35,8 +35,11 @@ function off(){on=false;if(hl)hl.style.display='none';if(tip)tip.style.display='
 document.addEventListener('mousemove',move,true);
 document.addEventListener('click',pick,true);
 document.addEventListener('keydown',key,true);
-function run(code){try{return (0,eval)(code);}catch(err){return null;}}
-window.addEventListener('message',function(e){var d=e.data||{};if(d.__brpPick==='on')enable();else if(d.__brpPick==='off')off();else if(d.__brpMeasure)parent.postMessage({__brpMeasured:{id:d.__brpMeasure.id,value:run(d.__brpMeasure.code)}},'*');else if(d.__brpEval)run(d.__brpEval);});
+function resolve(ref){var t=/data-testid="([^"]+)"/.exec(ref);if(t)return document.querySelector('[data-testid="'+t[1].replace(/"/g,'\\"')+'"]');var p=/^([a-z][\\w-]*):(\\d+)$/.exec(ref);if(p)return document.querySelectorAll(p[1])[Number(p[2])]||null;return null;}
+function measure(ref,props){var el=resolve(ref);if(!el)return null;var r=el.getBoundingClientRect();var par=el.offsetParent||document.documentElement;var pr=par.getBoundingClientRect();var cs=getComputedStyle(el);var styles={};for(var i=0;i<props.length;i++)styles[props[i]]=cs.getPropertyValue(props[i]);
+return {ref:ref,box:{x:r.left,y:r.top,width:r.width,height:r.height,offsetLeft:r.left-pr.left,offsetTop:r.top-pr.top,offsetRight:pr.right-r.right,offsetBottom:pr.bottom-r.bottom},position:cs.position,parentDisplay:getComputedStyle(par).display,contentHeight:el.scrollHeight,styles:styles};}
+function apply(ops){for(var i=0;i<ops.length;i++){var op=ops[i];var el=resolve(op.ref);if(!el)continue;if(op.text!==null&&op.text!==undefined)el.textContent=op.text;for(var d=0;d<op.declarations.length;d++)el.style.setProperty(op.declarations[d][0],op.declarations[d][1]);}}
+window.addEventListener('message',function(e){var d=e.data||{};if(d.__brpPick==='on')enable();else if(d.__brpPick==='off')off();else if(d.__brpMeasure)parent.postMessage({__brpMeasured:{id:d.__brpMeasure.id,value:measure(d.__brpMeasure.ref,d.__brpMeasure.props||[])}},'*');else if(d.__brpApply)apply(d.__brpApply.ops||[]);});
 })();</script>`;
 
 function prototypeProxy(): Plugin {

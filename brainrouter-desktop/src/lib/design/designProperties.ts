@@ -237,11 +237,16 @@ export function groupResetsFor(declarations: readonly CssDeclaration[]): CssDecl
   return resets;
 }
 
-/** Builds the snippet evaluated inside the preview to apply a draft. Values are
- *  embedded as JSON, so nothing in an operation can escape into script position.
+/** One element's resolved draft: what to set, already sanitized. This is the
+ *  wire format for the browser preview, which cannot be sent code — prototypes
+ *  ship `script-src 'unsafe-inline'`, which permits inline script but NOT eval,
+ *  so the guest's own injected handler applies this data itself. */
+export type ApplyEntry = { ref: string; text: string | null; declarations: CssDeclaration[] };
+
+/** Resolves draft operations into per-element declarations, group resets first.
  *  `boxes` supplies the measured geometry the constraint properties need, keyed
  *  by element ref; operations whose ref is absent simply emit no constraint CSS. */
-export function buildApplyScript(operations: readonly DraftOperation[], boxes: Record<string, ConstraintBox> = {}): string {
+export function buildApplyPayload(operations: readonly DraftOperation[], boxes: Record<string, ConstraintBox> = {}): ApplyEntry[] {
   // Grouped per element so the group resets can be computed once, from the full
   // set of declarations that element receives, and emitted BEFORE them.
   const byRef = new Map<string, { text: string | null; declarations: CssDeclaration[] }>();
@@ -251,11 +256,19 @@ export function buildApplyScript(operations: readonly DraftOperation[], boxes: R
     else entry.declarations.push(...cssDeclarationsFor(operation.property, operation.value, boxes[operation.elementRef]));
     byRef.set(operation.elementRef, entry);
   }
-  const payload = [...byRef].map(([ref, entry]) => ({
+  return [...byRef].map(([ref, entry]) => ({
     ref,
     text: entry.text,
     declarations: [...groupResetsFor(entry.declarations), ...entry.declarations],
   })).filter((item) => item.text !== null || item.declarations.length > 0);
+}
+
+/** Builds the snippet evaluated inside the preview to apply a draft. Values are
+ *  embedded as JSON, so nothing in an operation can escape into script position.
+ *  Electron only — `executeJavaScript` is injected by the embedder and is not
+ *  subject to the guest's CSP, unlike an in-page eval. */
+export function buildApplyScript(operations: readonly DraftOperation[], boxes: Record<string, ConstraintBox> = {}): string {
+  const payload = buildApplyPayload(operations, boxes);
   if (payload.length === 0) return '';
   return `(function(){${REF_RESOLVER_JS}
 var ops = ${JSON.stringify(payload)};

@@ -73,6 +73,8 @@ Two controls are gated on what the CSS can actually do, because a control that l
 
 Every field is seeded from the element's **measured** computed style, read out of the live preview (`PreviewHandle.measure`) — Electron evaluates the snippet in the `<webview>`, and the dev browser fallback relays it through the injected picker over `postMessage`. A draft operation overrides the measured value; Revert clears the draft and reloads.
 
+**The browser channel carries data, never code.** A prototype ships `default-src 'none'; script-src 'unsafe-inline'`, which permits the injected picker's inline `<script>` but *not* `eval` — so posting a snippet for the guest to evaluate fails silently and every read comes back `null`. Measure therefore posts `{__brpMeasure:{id,ref,props}}` and apply posts `{__brpApply:{ops}}` (from `buildApplyPayload`, already resolved to `[property, value]` pairs); the guest's own CSP-approved handler does the work. Electron is exempt because `executeJavaScript` is injected by the embedder rather than by the document, so `buildApplyScript` still serves the `<webview>`. Loosening the prototype CSP to make `eval` work is not an option — it is the sandbox boundary for untrusted generated HTML.
+
 Code exposes the semantic tag, stable ref, testid, child count, measured size, computed position, and text summary. AI hands the selected element and draft context to Fix Chat.
 
 ### How composite CSS is expressed

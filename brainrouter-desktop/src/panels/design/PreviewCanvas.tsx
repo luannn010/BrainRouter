@@ -2,8 +2,8 @@
 import React, { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
 import { startPick as wvStartPick, readPick, cancelPick, type WebviewEl } from '../../lib/uitest/webviewBridge.js';
 import type { DraftOperation } from '../../lib/design/designElements.js';
-import { buildApplyScript } from '../../lib/design/designProperties.js';
-import { buildMeasureScript, parseMeasurement, type MeasuredElement } from '../../lib/design/designMeasure.js';
+import { buildApplyPayload, buildApplyScript } from '../../lib/design/designProperties.js';
+import { buildMeasureScript, MEASURED_CSS_PROPERTIES, parseMeasurement, type MeasuredElement } from '../../lib/design/designMeasure.js';
 import type { ConstraintBox } from '../../lib/design/designConstraints.js';
 import { fileUrlFor, type PrototypeEntry } from '../../lib/design/prototypeMeta.js';
 import { markWebviewReady, queueWebviewUrl } from '../../lib/design/webviewLifecycle.js';
@@ -129,20 +129,25 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
     getWebview: () => wvRef.current,
     applyDraft: async (operations, target, boxes) => {
       const wv = target ?? wvRef.current;
-      const code = buildApplyScript(operations, boxes);
-      if (!code) return;
-      if (wv && webviewStateRef.current.ready) { await wv.executeJavaScript(code, true); return; }
-      // Browser fallback: the guest is cross-origin, so the injected dev script
-      // evaluates the snippet for us. Without this, drafts never reached the
-      // browser preview at all.
+      if (wv && webviewStateRef.current.ready) {
+        const code = buildApplyScript(operations, boxes);
+        if (code) await wv.executeJavaScript(code, true);
+        return;
+      }
+      // Browser fallback: send resolved DATA, never code. Prototypes ship
+      // `script-src 'unsafe-inline'`, which permits the injected inline handler
+      // but NOT eval — so the guest applies these declarations itself.
+      const ops = buildApplyPayload(operations, boxes);
+      if (ops.length === 0) return;
       const frame = iframeRef.current;
-      try { frame?.contentWindow?.postMessage({ __brpEval: code }, '*'); } catch { /* guest not ready */ }
+      try { frame?.contentWindow?.postMessage({ __brpApply: { ops } }, '*'); } catch { /* guest not ready */ }
     },
     measure: async (ref) => {
-      const code = buildMeasureScript(ref);
       const wv = wvRef.current;
       if (wv && webviewStateRef.current.ready) {
-        try { return parseMeasurement(await wv.executeJavaScript(code, false)); } catch { return null; }
+        // Electron: executeJavaScript is injected by the embedder, so unlike an
+        // in-page eval it is not blocked by the prototype's CSP.
+        try { return parseMeasurement(await wv.executeJavaScript(buildMeasureScript(ref), false)); } catch { return null; }
       }
       const frame = iframeRef.current;
       if (!frame?.contentWindow) return null;
@@ -159,7 +164,7 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
         };
         const timer = window.setTimeout(() => { window.removeEventListener('message', onMsg); resolve(null); }, 1200);
         window.addEventListener('message', onMsg);
-        try { frame.contentWindow?.postMessage({ __brpMeasure: { id, code } }, '*'); }
+        try { frame.contentWindow?.postMessage({ __brpMeasure: { id, ref, props: MEASURED_CSS_PROPERTIES } }, '*'); }
         catch { window.clearTimeout(timer); window.removeEventListener('message', onMsg); resolve(null); }
       });
     },
