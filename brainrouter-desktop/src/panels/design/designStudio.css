@@ -26,9 +26,9 @@
 }
 .design-studio *[data-mono], .design-studio .ds-mono { font-family:var(--ds-mono); }
 /* Three grid columns — 1fr │ auto │ 1fr — keep the section tabs dead-centred
-   regardless of the left cluster's width, and leave the right column empty so
-   the app's floating top-right cluster (settings · export · side-panel) never
-   sits over a control. */
+   regardless of the left cluster's width. The right column stays EMPTY: the
+   app's floating top-right cluster (fix chat · settings · export · side-panel)
+   sits over it, so no studio control may live there. */
 .design-studio .ds-nav { display:grid; grid-template-columns:1fr auto 1fr; gap:2px; padding:8px; border-bottom:1px solid var(--ds-border); background:var(--ds-surface); align-items:center; }
 .design-studio .ds-nav-left { display:flex; align-items:center; gap:8px; min-width:0; }
 .design-studio .ds-seg { background:transparent; color:var(--ds-text-2); border:0; padding:6px 12px; border-radius:var(--ds-radius-control); font:inherit; cursor:pointer; }
@@ -103,7 +103,7 @@
 .design-studio .ds-iconbtn { background:transparent; color:var(--ds-text-2); border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); padding:6px 10px; font:inherit; cursor:pointer; }
 .design-studio .ds-iconbtn[aria-pressed="true"] { color:var(--ds-accent); border-color:var(--ds-accent); }
 .design-studio .ds-preview { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:stretch; padding:12px; }
-.design-studio .ds-stage { width:100%; height:100%; background:var(--ds-bg); border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
+.design-studio .ds-stage { position:relative; width:100%; height:100%; background:var(--ds-bg); border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); overflow:hidden; margin:0 auto; }
 
 /* --- Flow inspector rail --- */
 .design-studio .ds-testinspect { width:260px; flex:none; border-left:1px solid var(--ds-border); padding:12px; overflow:auto; display:flex; flex-direction:column; gap:8px; }
@@ -113,7 +113,8 @@
 
 /* --- UI-fix chat --- */
 .design-studio .ds-chat { width:340px; flex:none; border-left:1px solid var(--ds-border); background:var(--ds-surface); display:flex; flex-direction:column; }
-.design-studio .ds-chat-head { padding:10px 12px; border-bottom:1px solid var(--ds-border); display:flex; flex-direction:column; gap:2px; }
+.design-studio .ds-chat-head { position:relative; padding:10px 12px; border-bottom:1px solid var(--ds-border); display:flex; flex-direction:column; gap:2px; }
+.design-studio .ds-chat-close { position:absolute; top:8px; right:8px; display:inline-flex; align-items:center; justify-content:center; padding:4px; line-height:0; }
 .design-studio .ds-chat-target { color:var(--ds-text-3); font-size:12px; }
 .design-studio .ds-chat-log { flex:1; min-height:0; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:12px; }
 .design-studio .ds-msg { display:flex; flex-direction:column; gap:4px; font-size:13px; }
@@ -234,3 +235,185 @@
 .design-studio .ds-guard-head--dont { color:var(--ds-danger); }
 .design-studio .ds-check li::marker { color:var(--ds-accent); }
 @media (max-width:900px) { .design-studio .ds-guard { grid-template-columns:1fr; } }
+
+/* Open Pencil-inspired Designs editor: resource rail | stage | inspector. */
+.design-studio .ds-design-editor { --ds-inspector-w:300px; display:grid; grid-template-columns:228px minmax(0,1fr) var(--ds-inspector-w); background:var(--ds-bg); }
+.design-studio .ds-resource-rail { min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--ds-border); background:var(--ds-surface); }
+.design-studio .ds-resource-tabs { display:flex; flex-wrap:wrap; gap:2px; padding:7px; border-bottom:1px solid var(--ds-border); }
+.design-studio .ds-resource-tab { display:flex; align-items:center; gap:6px; min-height:32px; padding:6px 8px; border:1px solid transparent; border-radius:var(--ds-radius-control); color:var(--ds-text-2); background:transparent; cursor:pointer; font:11px var(--ds-font); }
+.design-studio .ds-resource-tab:hover { color:var(--ds-text); background:var(--ds-overlay); }
+.design-studio .ds-resource-tab.is-active { color:var(--ds-text); background:var(--ds-accent-wash); border-color:var(--ds-accent); }
+.design-studio .ds-resource-content { min-height:0; overflow:auto; padding:9px 7px; }
+.design-studio .ds-resource-section { display:flex; justify-content:space-between; align-items:center; padding:7px 7px 5px; }
+.design-studio .ds-resource-count { color:var(--ds-text-3); font:11px var(--ds-mono); }
+.design-studio .ds-resource-list { gap:1px; }
+.design-studio .ds-fileitem-title { display:flex; align-items:center; gap:6px; }
+.design-studio .ds-inventory-list { list-style:none; margin:0; padding:0; }
+.design-studio .ds-inventory-list li { padding:8px; color:var(--ds-text-2); border-bottom:1px solid var(--ds-border); font-size:11px; overflow-wrap:anywhere; }
+.design-studio .ds-layer-tree { display:flex; flex-direction:column; gap:1px; }
+.design-studio .ds-layer-row { display:flex; align-items:center; gap:5px; width:100%; min-height:30px; padding-top:5px; padding-bottom:5px; border:0; color:var(--ds-text-2); background:transparent; text-align:left; cursor:pointer; font:11px var(--ds-font); }
+.design-studio .ds-layer-row span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.design-studio .ds-layer-row small { color:var(--ds-text-3); font:9px var(--ds-mono); }
+.design-studio .ds-layer-row:hover { color:var(--ds-text); background:var(--ds-overlay); }
+.design-studio .ds-layer-row.is-selected { color:var(--ds-text); background:#2a66d9; box-shadow:inset 2px 0 0 #8db2ff; }
+.design-studio .ds-layer-row:focus-visible, .design-studio .ds-resource-tab:focus-visible, .design-studio .ds-tool-button:focus-visible, .design-studio .ds-zoom-button:focus-visible { outline:2px solid var(--ds-accent); outline-offset:-2px; }
+.design-studio .ds-editor-stage { min-width:0; min-height:0; display:flex; flex-direction:column; background:var(--ds-bg); }
+.design-studio .ds-stage-title { display:flex; align-items:center; gap:7px; min-width:0; }
+.design-studio .ds-stage-title span { color:var(--ds-text); font-size:12px; font-weight:600; }
+.design-studio .ds-stage-title small { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ds-text-3); font:10px var(--ds-mono); }
+.design-studio .ds-stage-shell { flex:1; min-height:0; position:relative; overflow:auto; scrollbar-gutter:stable both-edges; background-color:#101316; background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px); background-size:24px 24px; }
+/* One distinct cursor per tool, so the active mode is always visible. */
+.design-studio .ds-stage-shell--select { cursor:default; }
+.design-studio .ds-stage-shell--hand { cursor:grab; }
+.design-studio .ds-stage-shell--hand.is-panning { cursor:grabbing; }
+.design-studio .ds-stage-shell--frame, .design-studio .ds-stage-shell--shape { cursor:crosshair; }
+.design-studio .ds-stage-shell--text { cursor:text; }
+.design-studio .ds-stage-shell--inspect { cursor:zoom-in; }
+/* The preview hugs the (explicitly sized) zoom wrapper but never shrinks
+   below the shell, so a small stage stays centered and a zoomed one scrolls. */
+.design-studio .ds-stage-shell .ds-preview { min-width:100%; min-height:100%; width:fit-content; height:fit-content; box-sizing:border-box; padding:28px; display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start; }
+/* Layout-space footprint of the scaled stage — transform:scale creates no
+   layout overflow, so this wrapper is what makes zoom > 100% scrollable. */
+.design-studio .ds-stage-zoom { flex:none; position:relative; transition:width 180ms cubic-bezier(.2,.8,.2,1),height 180ms cubic-bezier(.2,.8,.2,1); }
+/* margin:0 (not auto): the stage must sit at the wrapper's origin so the
+   top-left-scaled stage exactly fills the wrapper's layout footprint. */
+.design-studio .ds-stage-shell .ds-stage { margin:0; box-shadow:0 20px 50px rgba(0,0,0,.42); transition:transform 180ms cubic-bezier(.2,.8,.2,1); }
+/* --- Annotation layer (Frame / Shape / Text tools) — host DOM above the
+       preview surface; never part of the prototype's HTML. --- */
+.design-studio .ds-anno-layer { position:absolute; inset:0; z-index:3; pointer-events:none; user-select:none; }
+.design-studio .ds-anno-layer.is-interactive { pointer-events:auto; }
+.design-studio .ds-anno { position:absolute; box-sizing:border-box; pointer-events:auto; }
+/* Inspect must click THROUGH annotations to pick prototype elements. */
+.design-studio .ds-anno-layer[data-tool="inspect"] .ds-anno { pointer-events:none; }
+.design-studio .ds-anno--frame { border:1.5px solid var(--ds-accent); border-radius:4px; }
+.design-studio .ds-anno--section { border:1.5px dashed var(--ds-accent); border-radius:6px; }
+.design-studio .ds-anno--rectangle { border:1px solid var(--ds-accent); border-radius:4px; background:var(--ds-accent-wash); }
+/* line/ellipse/polygon/star draw themselves in SVG — no CSS box chrome. */
+.design-studio .ds-anno svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; stroke:var(--ds-accent); stroke-width:1.5; fill:none; pointer-events:none; }
+.design-studio .ds-anno--ellipse svg ellipse, .design-studio .ds-anno--polygon svg polygon, .design-studio .ds-anno--star svg polygon { fill:var(--ds-accent-wash); }
+.design-studio .ds-anno--text { color:var(--ds-accent); font:12px var(--ds-font); line-height:1.3; overflow:hidden; white-space:nowrap; }
+.design-studio .ds-anno--draft { border:1px dashed var(--ds-accent); background:var(--ds-accent-wash); pointer-events:none; }
+.design-studio .ds-anno--draft.ds-anno--line { background:transparent; }
+.design-studio .ds-anno.is-selected { outline:1px dashed var(--ds-text); outline-offset:2px; }
+.design-studio .ds-anno.is-locked { opacity:.7; }
+.design-studio .ds-anno-label { position:absolute; top:-18px; left:0; padding:1px 5px; border-radius:3px; background:var(--ds-bg); color:var(--ds-accent); font:10px var(--ds-mono); white-space:nowrap; }
+/* Section labels sit INSIDE the region, Figma-style. */
+.design-studio .ds-anno--section .ds-anno-label { top:5px; left:5px; }
+.design-studio .ds-anno-input { position:absolute; inset:0; padding:2px 4px; border:1px dashed var(--ds-accent); background:var(--ds-bg); color:var(--ds-text); font:12px var(--ds-font); }
+.design-studio .ds-anno-input:focus { outline:none; }
+.design-studio .ds-ruler { position:absolute; z-index:5; pointer-events:none; color:var(--ds-text-3); background:color-mix(in srgb, var(--ds-surface) 92%, transparent); font:9px var(--ds-mono); overflow:hidden; }
+.design-studio .ds-ruler--top { inset:0 24px auto 0; height:24px; border-bottom:1px solid var(--ds-border); background-image:repeating-linear-gradient(90deg, transparent 0, transparent 49px, var(--ds-border) 50px, transparent 51px); }
+.design-studio .ds-ruler--right { inset:24px 0 0 auto; width:24px; border-left:1px solid var(--ds-border); background-image:repeating-linear-gradient(0deg, transparent 0, transparent 49px, var(--ds-border) 50px, transparent 51px); }
+.design-studio .ds-ruler-tick { position:absolute; display:block; width:1px; height:7px; border-left:1px solid var(--ds-text-3); }
+.design-studio .ds-ruler--right .ds-ruler-tick { width:7px; height:1px; border-left:0; border-top:1px solid var(--ds-text-3); }
+.design-studio .ds-ruler-tick b { position:absolute; top:7px; left:3px; font:9px var(--ds-mono); font-weight:400; white-space:nowrap; }
+.design-studio .ds-ruler--right .ds-ruler-tick b { top:3px; left:7px; writing-mode:vertical-rl; }
+.design-studio .ds-bottom-toolbar { display:flex; align-items:center; justify-content:center; gap:7px; min-height:44px; padding:7px 10px; border-top:1px solid var(--ds-border); background:var(--ds-surface); box-shadow:0 -8px 24px rgba(0,0,0,.14); }
+.design-studio .ds-tool-group { display:flex; align-items:center; gap:2px; padding:3px; border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-panel); background:var(--ds-overlay); }
+.design-studio .ds-tool-button, .design-studio .ds-zoom-button { display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:var(--ds-radius-control); color:var(--ds-text-2); background:transparent; cursor:pointer; }
+.design-studio .ds-tool-button:hover, .design-studio .ds-zoom-button:hover { color:var(--ds-text); background:var(--ds-surface); }
+.design-studio .ds-tool-button.is-active { color:#fff; background:#2d6be4; box-shadow:0 2px 8px rgba(45,107,228,.34); }
+.design-studio .ds-tool-divider { width:1px; height:24px; background:var(--ds-border-strong); }
+/* Split tool buttons (frame/shape): main button + chevron opening a flyout. */
+.design-studio .ds-tool-split { position:relative; display:flex; align-items:center; }
+.design-studio .ds-tool-chevron { display:grid; place-items:center; width:13px; height:32px; padding:0; border:0; border-radius:var(--ds-radius-control); color:var(--ds-text-3); background:transparent; cursor:pointer; }
+.design-studio .ds-tool-chevron:hover, .design-studio .ds-tool-chevron[aria-expanded="true"] { color:var(--ds-text); background:var(--ds-surface); }
+.design-studio .ds-tool-flyout { position:absolute; bottom:calc(100% + 12px); left:-4px; min-width:170px; padding:5px; border:1px solid var(--ds-border-strong); border-radius:10px; background:#1c1e21; box-shadow:0 12px 32px rgba(0,0,0,.45); z-index:20; }
+.design-studio .ds-flyout-item { display:flex; align-items:center; gap:9px; width:100%; padding:7px 9px; border:0; border-radius:6px; color:var(--ds-text); background:transparent; cursor:pointer; font:12px var(--ds-font); text-align:left; }
+.design-studio .ds-flyout-item span { flex:1; }
+.design-studio .ds-flyout-item kbd { color:var(--ds-text-3); font:11px var(--ds-mono); }
+.design-studio .ds-flyout-item.is-current { background:var(--ds-accent-wash); }
+.design-studio .ds-flyout-item:hover { background:#2d6be4; color:#fff; }
+.design-studio .ds-flyout-item:hover kbd { color:rgba(255,255,255,.75); }
+
+/* Figma-style canvas context menu. Rendered through a portal onto <body> (the
+   transform-scaled stage would hijack position:fixed), so it can't reach the
+   .design-studio custom properties — colors are literal. */
+.ds-ctx-menu { position:fixed; z-index:1000; max-height:calc(100vh - 16px); overflow:auto; padding:6px; border:1px solid rgba(255,255,255,.09); border-radius:12px; background:#1c1e21; box-shadow:0 16px 44px rgba(0,0,0,.5); }
+.ds-ctx-item { display:flex; align-items:center; justify-content:space-between; gap:20px; width:100%; padding:5px 10px; border:0; border-radius:6px; color:#eceff2; background:transparent; cursor:pointer; font:12px/1.5 ui-sans-serif,system-ui,sans-serif; text-align:left; white-space:nowrap; }
+.ds-ctx-item:hover:not(:disabled) { background:#2d6be4; color:#fff; }
+.ds-ctx-item:disabled { color:#686f76; cursor:default; }
+.ds-ctx-item kbd { color:#8b9299; font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+.ds-ctx-item:hover:not(:disabled) kbd { color:rgba(255,255,255,.75); }
+.ds-ctx-sep { height:1px; margin:5px 4px; background:rgba(255,255,255,.08); }
+.design-studio .ds-zoom-value { min-width:42px; color:var(--ds-text-2); text-align:center; font-size:11px; }
+.design-studio .ds-design-inspector { min-width:0; overflow:auto; border-left:1px solid var(--ds-border); background:var(--ds-surface); }
+.design-studio .ds-inspector-tabs { display:flex; align-items:center; gap:2px; padding:9px 9px 0; border-bottom:1px solid var(--ds-border); }
+.design-studio .ds-inspector-tabs button { display:flex; align-items:center; gap:4px; padding:7px 8px; border:0; border-bottom:2px solid transparent; color:var(--ds-text-2); background:transparent; cursor:pointer; font:11px var(--ds-font); }
+.design-studio .ds-inspector-tabs button.is-active { color:var(--ds-text); border-bottom-color:var(--ds-accent); }
+.design-studio .ds-inspector-panel { display:flex; flex-direction:column; gap:14px; padding:13px; }
+.design-studio .ds-inspector-instance { display:flex; flex-direction:column; gap:3px; padding-bottom:10px; border-bottom:1px solid var(--ds-border); }
+.design-studio .ds-inspector-instance strong { color:var(--ds-text); font-size:14px; }
+.design-studio .ds-inspector-instance small { color:var(--ds-text-3); overflow-wrap:anywhere; }
+.design-studio .ds-inspector-section { display:flex; flex-direction:column; gap:8px; padding-bottom:12px; border-bottom:1px solid var(--ds-border); }
+.design-studio .ds-inspector-section h3 { margin:0; color:var(--ds-text-2); font-size:11px; font-weight:600; }
+.design-studio .ds-inspector-grid { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.design-studio .ds-inspector-grid label, .design-studio .ds-inspector-panel > label { display:flex; flex-direction:column; gap:4px; color:var(--ds-text-3); font-size:10px; }
+.design-studio .ds-inspector-grid input, .design-studio .ds-inspector-grid select, .design-studio .ds-inspector-panel > label input { width:100%; min-width:0; box-sizing:border-box; padding:7px; border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); color:var(--ds-text); background:var(--ds-bg); font:11px var(--ds-mono); }
+.design-studio .ds-inspector-grid input:focus, .design-studio .ds-inspector-grid select:focus, .design-studio .ds-inspector-panel > label input:focus { outline:2px solid var(--ds-accent); outline-offset:1px; }
+.design-studio .ds-check-row { display:flex !important; flex-direction:row !important; align-items:center; gap:7px; color:var(--ds-text-2) !important; font-size:11px !important; }
+.design-studio .ds-inspector-wide { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; }
+.design-studio .ds-inspector-copy { margin:0; color:var(--ds-text-2); font-size:12px; line-height:1.5; }
+.design-studio .ds-code-block { display:block; padding:9px; overflow:auto; color:var(--ds-accent); background:var(--ds-bg); border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); font:11px var(--ds-mono); }
+.design-studio .ds-design-inspector .ds-inspector-empty { display:flex; flex-direction:column; align-items:center; gap:10px; margin:48px 18px; color:var(--ds-text-3); text-align:center; font-size:12px; }
+/* --- Figma-grade inspector controls --- */
+.design-studio .ds-inspector-sectionhead { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.design-studio .ds-section-toggle { display:flex; align-items:center; gap:5px; flex:1; min-width:0; padding:2px 0; border:0; background:transparent; color:var(--ds-text-2); cursor:pointer; text-align:left; }
+.design-studio .ds-section-toggle h3 { margin:0; color:var(--ds-text-2); font-size:11px; font-weight:600; letter-spacing:0.01em; }
+.design-studio .ds-section-toggle:focus-visible { outline:2px solid var(--ds-accent); outline-offset:2px; border-radius:var(--ds-radius-chip); }
+.design-studio .ds-section-body { display:flex; flex-direction:column; gap:7px; }
+.design-studio .ds-field { display:flex; flex-direction:column; gap:4px; min-width:0; color:var(--ds-text-3); font-size:10px; }
+.design-studio .ds-field-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.design-studio .ds-field-input { position:relative; display:flex; align-items:center; }
+.design-studio .ds-field-input input { width:100%; min-width:0; box-sizing:border-box; padding:7px 22px; border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); color:var(--ds-text); background:var(--ds-bg); font:11px var(--ds-mono); }
+.design-studio .ds-field-input input:only-child { padding:7px 9px; }
+.design-studio .ds-field select { width:100%; min-width:0; box-sizing:border-box; padding:7px 9px; border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); color:var(--ds-text); background:var(--ds-bg); font:11px var(--ds-font); }
+.design-studio .ds-field-affix { position:absolute; left:8px; color:var(--ds-text-3); font:10px var(--ds-mono); font-style:normal; pointer-events:none; }
+.design-studio .ds-field-affix--end { left:auto; right:8px; }
+.design-studio .ds-field input:focus, .design-studio .ds-field select:focus { outline:2px solid var(--ds-accent); outline-offset:1px; }
+.design-studio .ds-segrow { display:flex; gap:2px; padding:2px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-bg); }
+.design-studio .ds-segbtn { display:flex; align-items:center; justify-content:center; flex:1; min-width:0; padding:6px 0; border:0; border-radius:var(--ds-radius-chip); color:var(--ds-text-3); background:transparent; cursor:pointer; }
+.design-studio .ds-segbtn:hover { color:var(--ds-text-2); background:var(--ds-overlay); }
+.design-studio .ds-segbtn.is-active { color:var(--ds-text); background:var(--ds-overlay); }
+.design-studio .ds-segbtn:focus-visible { outline:2px solid var(--ds-accent); outline-offset:-1px; }
+.design-studio .ds-togglerow { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--ds-text-2); font-size:11px; }
+.design-studio .ds-togglerow input { position:absolute; width:1px; height:1px; opacity:0; }
+.design-studio .ds-switch { position:relative; flex:none; width:26px; height:15px; border-radius:999px; background:var(--ds-border-strong); transition:background 120ms ease; }
+.design-studio .ds-switch::after { content:''; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:var(--ds-text); transition:transform 120ms ease; }
+.design-studio .ds-togglerow input:checked + .ds-switch { background:var(--ds-accent); }
+.design-studio .ds-togglerow input:checked + .ds-switch::after { transform:translateX(11px); }
+.design-studio .ds-togglerow input:focus-visible + .ds-switch { outline:2px solid var(--ds-accent); outline-offset:2px; }
+.design-studio .ds-swatchrow { display:flex; align-items:center; gap:6px; padding:5px 7px; border:1px solid var(--ds-border-strong); border-radius:var(--ds-radius-control); background:var(--ds-bg); }
+.design-studio .ds-swatch-chip { flex:none; width:14px; height:14px; border:1px solid var(--ds-border-strong); border-radius:3px; }
+.design-studio .ds-swatchrow input { min-width:0; border:0; background:transparent; color:var(--ds-text); font:11px var(--ds-mono); }
+.design-studio .ds-swatch-hex { flex:1; min-width:0; display:flex; }
+.design-studio .ds-swatch-hex input { width:100%; }
+.design-studio .ds-swatch-alpha { flex:none; width:34px; display:flex; }
+.design-studio .ds-swatch-alpha input { width:100%; text-align:right; }
+.design-studio .ds-swatchrow .ds-field-affix { position:static; }
+.design-studio .ds-swatchrow input:focus { outline:2px solid var(--ds-accent); outline-offset:1px; border-radius:3px; }
+.design-studio .ds-sr-only { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.design-studio .ds-field.is-disabled, .design-studio .ds-segrow.is-disabled { opacity:0.45; }
+.design-studio .ds-field.is-disabled input, .design-studio .ds-field.is-disabled select, .design-studio .ds-segrow.is-disabled .ds-segbtn { cursor:not-allowed; }
+.design-studio .ds-field-hint { margin:0; color:var(--ds-text-3); font-size:10px; line-height:1.45; }
+.design-studio .ds-linkbtn { padding:0; border:0; background:transparent; color:var(--ds-accent); font:inherit; text-decoration:underline; cursor:pointer; }
+.design-studio .ds-linkbtn:focus-visible { outline:2px solid var(--ds-accent); outline-offset:2px; }
+.design-studio .ds-inspector-note { margin:0; color:var(--ds-text-3); font-size:10px; line-height:1.5; overflow-wrap:anywhere; }
+.design-studio .ds-inspector-note code { color:var(--ds-text-2); font:10px var(--ds-mono); }
+.design-studio .ds-measure-readout { flex:none; color:var(--ds-text-3); font-size:10px; }
+.design-studio .ds-layer-head { display:flex; align-items:center; gap:6px; padding-bottom:10px; border-bottom:1px solid var(--ds-border); color:var(--ds-text-2); }
+.design-studio .ds-layer-head strong { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ds-text); font-size:13px; font-weight:600; }
+.design-studio .ds-layer-head small { flex:none; color:var(--ds-text-3); font-size:10px; }
+.design-studio .ds-layer-dirty { flex:none; padding:2px 6px; border-radius:var(--ds-radius-chip); color:var(--ds-accent); background:var(--ds-accent-wash); font-size:9px; text-transform:uppercase; letter-spacing:0.04em; }
+@media (prefers-reduced-motion: reduce) { .design-studio .ds-switch, .design-studio .ds-switch::after { transition:none; } }
+@media (max-width:1180px) { .design-studio .ds-design-editor { --ds-inspector-w:268px; } }
+@media (max-width:1050px) { .design-studio .ds-design-editor { grid-template-columns:190px minmax(0,1fr) var(--ds-inspector-w); --ds-inspector-w:248px; } .design-studio .ds-resource-tab span { display:none; } }
+@media (max-width:900px) { .design-studio .ds-inspector-grid { grid-template-columns:1fr; } }
+/* Below this the three-column editor cannot hold all three panes, so the
+   inspector floats over the stage instead of disappearing — it is the tab's
+   primary surface and must stay reachable. */
+@media (max-width:760px) {
+  .design-studio .ds-design-editor { grid-template-columns:170px minmax(0,1fr); }
+  .design-studio .ds-design-inspector { position:absolute; top:0; right:0; bottom:0; z-index:6; width:min(300px,86vw); box-shadow:-12px 0 32px rgb(0 0 0 / 45%); }
+  .design-studio .ds-editor-stage { position:relative; }
+}
