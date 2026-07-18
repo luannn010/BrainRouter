@@ -13,7 +13,8 @@ import { flattenToPath } from '../../lib/design/designOutline.js';
 import { addComponent, componentFromHtml, componentFromSelection, uniqueComponentName } from '../../lib/design/designComponents.js';
 import { DesignContextMenu, type MenuAction, type MenuTarget } from './DesignContextMenu.js';
 import { QuickComponentChat } from './QuickComponentChat.js';
-import { isEditableTarget, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
+import { isEditableTarget, revertsToSelect, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
+import { setAnnotationStyle, type StyleField } from '../../lib/design/annotationStyle.js';
 import { fitBounds, panBy, screenToWorld, snapTo, wheelGesture, zoomAt, type ViewBounds, type Viewport } from '../../lib/design/canvasViewport.js';
 import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, toggleSelection, type SelectableItem, type Selection } from '../../lib/design/designSelection.js';
 import { MIN_SCREEN, isResizeHandle, resizeRect } from '../../lib/design/screenResize.js';
@@ -163,6 +164,17 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     changeAnnotations([...annotations.filter((a) => !ids.includes(a.id)), baked]);
     setAnnoIds([baked.id]);
   };
+  // Shape properties act on the whole annotation selection, so a fill change
+  // with three shapes selected fills all three.
+  const selectedShapes = annotations.filter((a) => annoIds.includes(a.id));
+  const setShapeGeometry = (field: 'x' | 'y' | 'w' | 'h', value: number): void => {
+    if (!Number.isFinite(value)) return;
+    const floor = field === 'w' || field === 'h' ? 1 : -Infinity;
+    changeAnnotations(annotations.map((a) => annoIds.includes(a.id) ? { ...a, [field]: Math.max(floor, Math.round(value)) } : a));
+  };
+  const setShapeStyle = (field: StyleField, value: string | number): void =>
+    changeAnnotations(setAnnotationStyle(annotations, annoIds, field, value));
+
   const addAutoLayout = (container: DesignAnnotation): void => {
     const withLayout = annotations.map((a) => a.id === container.id ? { ...a, autoLayout: a.autoLayout ?? DEFAULT_AUTO_LAYOUT } : a);
     changeAnnotations(autoLayoutAnnotations(withLayout, container.id));
@@ -635,7 +647,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
             <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}
               overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedIds={annoIds}
                 clipboard={clipboard} onSelect={selectFromCanvas} onChange={changeAnnotations} onClipboardChange={setClipboard}
-                onCreateComponent={createComponentFrom} onQuickChat={() => setQuickChatOpen(true)} />}
+                onCreateComponent={createComponentFrom} onQuickChat={() => setQuickChatOpen(true)}
+                onCreated={() => { if (revertsToSelect(tool)) setTool('select'); }} />}
               onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
           </div> : null}
           {marquee ? <div className="ds-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} /> : null}
@@ -662,6 +675,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         onFrameKindChange={setFrameKind} onShapeKindChange={setShapeKind}
         zoom={Math.round(view.scale * 100)} onZoomChange={setZoomPercent} onFit={fitAll} />
     </main>
-    <DesignInspector element={selectedElement} measured={measured} tab={inspectorTab} onTabChange={setInspectorTab} operations={operations} onOperationChange={updateOperation} onSave={saveDraft} onRevert={revertDraft} onOpenAi={onOpenAi} />
+    <DesignInspector element={selectedElement} measured={measured} tab={inspectorTab} onTabChange={setInspectorTab} operations={operations} onOperationChange={updateOperation} onSave={saveDraft} onRevert={revertDraft} onOpenAi={onOpenAi}
+      shapes={selectedShapes} onShapeGeometry={setShapeGeometry} onShapeStyle={setShapeStyle} />
   </div>;
 }

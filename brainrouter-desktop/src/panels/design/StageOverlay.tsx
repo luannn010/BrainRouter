@@ -16,6 +16,7 @@ import {
   setMask, starPointsFor, ungroupAnnotations,
   type AnnotationKind, type DesignAnnotation, type StagePoint, type StageRect,
 } from '../../lib/design/designAnnotations.js';
+import { cssForAnnotation, svgPaintFor } from '../../lib/design/annotationStyle.js';
 import { DEFAULT_AUTO_LAYOUT, autoLayoutAnnotations } from '../../lib/design/designAutoLayout.js';
 import { flattenToPath, outlinePathFor, outlineStrokePath, traceMask, translatePath } from '../../lib/design/designOutline.js';
 import { DesignContextMenu, type MenuAction } from './DesignContextMenu.js';
@@ -59,9 +60,10 @@ type Gesture =
 type MenuState = { x: number; y: number; point: StagePoint; targetId: string | null };
 
 /** SVG body for the drawn shapes; frame/section/rectangle/text are CSS boxes. */
-function ShapeSvg({ a }: { a: Pick<DesignAnnotation, 'kind' | 'w' | 'h' | 'flipX' | 'flipY' | 'path'> }): React.ReactElement | null {
+function ShapeSvg({ a }: { a: DesignAnnotation }): React.ReactElement | null {
   const w = Math.max(a.w, 1);
   const h = Math.max(a.h, 1);
+  const paint = svgPaintFor(a);
   // A line drawn upward is the rising diagonal; a flip on either axis mirrors it.
   const rising = (a.flipX ?? false) !== (a.flipY ?? false);
   const common = { vectorEffect: 'non-scaling-stroke' as const };
@@ -74,10 +76,13 @@ function ShapeSvg({ a }: { a: Pick<DesignAnnotation, 'kind' | 'w' | 'h' | 'flipX
   // as a solid letterform rather than a wireframe of itself.
   else if (a.kind === 'path' && a.path) body = <path d={a.path} fillRule="evenodd" {...common} />;
   if (!body) return null;
-  return <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden>{body}</svg>;
+  // Paint comes from the annotation, so the Design panel's fill/stroke controls
+  // reach the SVG kinds too — not just the CSS-box ones.
+  return <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden
+    fill={paint.fill} stroke={paint.stroke} strokeWidth={paint.strokeWidth}>{body}</svg>;
 }
 
-export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, selectedIds, clipboard, onSelect, onChange, onClipboardChange, onCreateComponent, onQuickChat }: {
+export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, selectedIds, clipboard, onSelect, onChange, onClipboardChange, onCreateComponent, onQuickChat, onCreated }: {
   tool: DesignTool;
   frameKind: FrameKind;
   shapeKind: ShapeKind;
@@ -91,6 +96,8 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
   onClipboardChange: (a: DesignAnnotation | null) => void;
   onCreateComponent: (members: DesignAnnotation[]) => void;
   onQuickChat: () => void;
+  /** Fired once something has been drawn, so the tool can hand back to Select. */
+  onCreated: () => void;
 }): React.ReactElement {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
@@ -148,7 +155,10 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     // exists to mask the preview surface in that mode.
     if (e.button !== 0 || tool === 'hand' || tool === 'inspect') return;
     const p = toStage(e.clientX, e.clientY);
-    const hit = hitTest(annotations, p);
+    // A creation tool always creates. Hit-testing first would mean that with
+    // the Rectangle tool armed, starting a drag on top of an existing shape
+    // moved that shape instead of drawing — which is not what any editor does.
+    const hit = tool === 'select' ? hitTest(annotations, p) : null;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* synthetic or already-released pointer */ }
     if (hit) {
       onSelect(e.shiftKey
@@ -163,6 +173,7 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
       onSelect([a.id]);
       setEditingId(a.id);
       setEditingValue('');
+      onCreated();
       return;
     }
     if (tool === 'frame' || tool === 'shape') {
@@ -206,6 +217,9 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     const a = createAnnotation(g.draw, rect, { label: isGroup ? nextGroupLabel(g.draw, annotations) : undefined, ...flip });
     onChange([...annotations, a]);
     onSelect([a.id]);
+    // One shape per press of the tool — hand back to Select so the next drag
+    // moves what was just drawn instead of drawing another one.
+    onCreated();
   };
 
   const onContextMenu = (e: React.MouseEvent<HTMLDivElement>): void => {
@@ -285,7 +299,7 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
       {annotations.map((a) => a.hidden ? null : (
         <div key={a.id}
           className={`ds-anno ds-anno--${a.kind}${selectedIds.includes(a.id) ? ' is-selected' : ''}${a.locked ? ' is-locked' : ''}${a.mask ? ' ds-anno--mask' : ''}`}
-          style={{ left: a.x, top: a.y, width: a.w, height: a.h, clipPath: clipFor(a) }}
+          style={{ left: a.x, top: a.y, width: a.w, height: a.h, clipPath: clipFor(a), ...cssForAnnotation(a) }}
           onDoubleClick={a.kind === 'text' ? () => { setEditingId(a.id); setEditingValue(a.label); } : undefined}>
           <ShapeSvg a={a} />
           {a.kind === 'frame' || a.kind === 'section' ? <span className="ds-anno-label">{a.label}</span> : null}
@@ -304,7 +318,9 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
       ))}
       {draft ? (
         <div className={`ds-anno ds-anno--draft ds-anno--${draft.kind}`} style={{ left: draft.rect.x, top: draft.rect.y, width: draft.rect.w, height: draft.rect.h }}>
-          <ShapeSvg a={{ kind: draft.kind, w: draft.rect.w, h: draft.rect.h, flipX: draft.flipX, flipY: draft.flipY }} />
+          {/* The in-progress shape previews with the same paint it will be
+              created with, so what you drag out is what you get. */}
+          <ShapeSvg a={{ id: 'draft', label: '', kind: draft.kind, x: draft.rect.x, y: draft.rect.y, w: draft.rect.w, h: draft.rect.h, flipX: draft.flipX, flipY: draft.flipY }} />
         </div>
       ) : null}
       {menu ? (

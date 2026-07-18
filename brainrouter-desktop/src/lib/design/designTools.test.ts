@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isEditableTarget, shouldArmElementPicker, toolForKey } from './designTools.js';
+import { TOOL_FOR_KEY, isEditableTarget, revertsToSelect, shouldArmElementPicker, toolForKey } from './designTools.js';
 
 test('every toolbar shortcut maps to its tool and variant, case-insensitively', () => {
   const expected = {
     v: { tool: 'select' },
     h: { tool: 'hand' },
     f: { tool: 'frame', frameKind: 'frame' },
-    s: { tool: 'inspect' },
+    s: { tool: 'frame', frameKind: 'section' },
     r: { tool: 'shape', shapeKind: 'rectangle' },
     l: { tool: 'shape', shapeKind: 'line' },
     o: { tool: 'shape', shapeKind: 'ellipse' },
@@ -43,4 +43,31 @@ test('select and inspect modes arm the element picker', () => {
   assert.equal(shouldArmElementPicker('inspect'), true);
   assert.equal(shouldArmElementPicker('frame'), false);
   assert.equal(shouldArmElementPicker('hand'), false);
+});
+
+test('tool shortcuts follow the OpenPencil map', () => {
+  assert.deepEqual(toolForKey('v'), { tool: 'select' });
+  assert.deepEqual(toolForKey('h'), { tool: 'hand' });
+  assert.deepEqual(toolForKey('f'), { tool: 'frame', frameKind: 'frame' });
+  assert.deepEqual(toolForKey('s'), { tool: 'frame', frameKind: 'section' }, 'S is Section there, not Inspect');
+  assert.deepEqual(toolForKey('r'), { tool: 'shape', shapeKind: 'rectangle' });
+  assert.deepEqual(toolForKey('o'), { tool: 'shape', shapeKind: 'ellipse' });
+  assert.deepEqual(toolForKey('l'), { tool: 'shape', shapeKind: 'line' });
+  assert.deepEqual(toolForKey('t'), { tool: 'text' });
+  assert.equal(toolForKey('p'), null, 'no pen tool on this surface');
+});
+
+test('polygon and star stay flyout-only, as they are in OpenPencil', () => {
+  const bound = Object.values(TOOL_FOR_KEY).map((s) => s.shapeKind).filter(Boolean);
+  assert.equal(bound.includes('polygon'), false);
+  assert.equal(bound.includes('star'), false);
+});
+
+test('creation tools hand back to Select; modes do not', () => {
+  assert.equal(revertsToSelect('shape'), true);
+  assert.equal(revertsToSelect('frame'), true);
+  assert.equal(revertsToSelect('text'), true);
+  assert.equal(revertsToSelect('select'), false);
+  assert.equal(revertsToSelect('hand'), false);
+  assert.equal(revertsToSelect('inspect'), false);
 });

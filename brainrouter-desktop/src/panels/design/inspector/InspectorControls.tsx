@@ -46,11 +46,15 @@ export function ToggleRow({ label, checked, onChange }: { label: string; checked
   return <label className="ds-togglerow"><span>{label}</span><input type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i className="ds-switch" aria-hidden /></label>;
 }
 
-export function Swatch({ label, value, alpha, onChange, onAlphaChange }: { label: string; value: string; alpha: string; onChange: (value: string) => void; onAlphaChange: (value: string) => void }): React.ReactElement {
+/** `alpha` is optional: a stroke colour on the canvas carries no separate
+ *  opacity of its own, so that row shows the chip and the hex only. */
+export function Swatch({ label, value, alpha, onChange, onAlphaChange }: { label: string; value: string; alpha?: string; onChange: (value: string) => void; onAlphaChange?: (value: string) => void }): React.ReactElement {
   return <div className="ds-swatchrow">
     <span className="ds-swatch-chip" style={{ background: value || 'transparent' }} aria-hidden />
     <label className="ds-swatch-hex"><span className="ds-sr-only">{`${label} colour`}</span><input value={value} onChange={(event) => onChange(event.target.value)} /></label>
-    <label className="ds-swatch-alpha"><span className="ds-sr-only">{`${label} opacity`}</span><input type="number" min="0" max="100" value={alpha} onChange={(event) => onAlphaChange(event.target.value)} /></label>
-    <i className="ds-field-affix" aria-hidden>%</i>
+    {alpha !== undefined && onAlphaChange ? <>
+      <label className="ds-swatch-alpha"><span className="ds-sr-only">{`${label} opacity`}</span><input type="number" min="0" max="100" value={alpha} onChange={(event) => onAlphaChange(event.target.value)} /></label>
+      <i className="ds-field-affix" aria-hidden>%</i>
+    </> : null}
   </div>;
 }

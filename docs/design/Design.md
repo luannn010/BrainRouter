@@ -154,6 +154,21 @@ Two value rules follow from the same mechanism:
 - Fill and text **alpha must be a bare number** — it is consumed as `calc(var(--br-fill-a) * 1%)`, and a value carrying its own unit makes the declaration invalid at computed-value time, which resolves to `initial` and *erases* the fill rather than leaving it alone. `alphaValue()` strips the unit and clamps to 0–100.
 - `font-feature-settings` uses **single** quotes (`'calt' 1`). The same declaration string is serialized into the `data-br-draft-style="…"` attribute by `applyDraftOperations`, where a double quote would close the attribute.
 
+### Tools and shape properties
+
+The tool shortcuts follow [OpenPencil](https://openpencil.dev/reference/keyboard-shortcuts)'s Figma-compatible map: **V** move/select, **H** hand, **F** frame, **S** section, **R** rectangle, **O** ellipse, **L** line, **T** text. Polygon and Star are flyout-only there, and here too. One deliberate divergence: OpenPencil binds **I** to an eyedropper, which this editor does not have, so **I** stays on Inspect — the element picker, which is this surface's reason to exist.
+
+Two rules make the creation tools behave like every direct-manipulation editor:
+
+- **A creation tool always creates.** The overlay hit-tests for a move only when Select is active. Testing first meant that with Rectangle armed, starting a drag on top of an existing shape moved that shape instead of drawing.
+- **One shape per press.** Frame, Shape and Text hand back to Select once something is drawn (`revertsToSelect`), so the next drag moves what you just made rather than drawing another. Hand, Select and Inspect are modes and stay put.
+
+A selected shape takes over the inspector's Design tab, showing the properties OpenPencil's does: position and size, appearance (opacity, corner radius), fill, stroke colour and width, and type size/weight for text. Edits apply to the whole selection. Unset means "the kind's default" rather than a stored value, so frames, sections, lines and text start unfilled while rectangles and ellipses start with the Signal wash.
+
+Colours are **allowlisted, not escaped** — hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, or a bare keyword. They land in an inline `style`, which is a place where "close enough" becomes CSS injection, so anything carrying a semicolon, a `url()`, or an unnamed function is refused and the annotation is left untouched. The guard runs both on write and again on render, so a hand-edited localStorage store cannot smuggle a value through either.
+
+What this editor does **not** match from OpenPencil: it is a Skia/CanvasKit vector editor with its own `.fig`/`.pen` format, gradients, a pen tool, boolean operations and WebRTC collaboration. This is a redline layer over live HTML prototypes, so fills are solid colours, not gradients or images, and there is no vector path editing beyond the baked outlines described above.
+
 ### Bottom toolbar
 
 The bottom dock contains Select, Hand, Frame, Shape, Text, Inspect, zoom out/in, zoom percentage, and Fit. Every icon-only control has an accessible label and tooltip/shortcut.

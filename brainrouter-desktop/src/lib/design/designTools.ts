@@ -14,20 +14,35 @@ export interface ToolSelection {
   shapeKind?: ShapeKind;
 }
 
-/** Single-key shortcuts, matching the toolbar + flyout hints. S is the
- *  inspect/select shortcut requested by Design Studio; Section remains
- *  available from the Frame flyout. */
+/**
+ * Single-key shortcuts, following OpenPencil's (Figma-compatible) tool map:
+ * V move/select, H hand, F frame, S section, R rectangle, O ellipse, L line,
+ * T text. Polygon and Star are flyout-only there, and are here too.
+ *
+ * One deliberate divergence: OpenPencil binds I to an eyedropper, which this
+ * editor does not have. I stays on Inspect — the element picker — because that
+ * is this surface's reason to exist.
+ */
 export const TOOL_FOR_KEY: Record<string, ToolSelection> = {
   v: { tool: 'select' },
-  s: { tool: 'inspect' },
   h: { tool: 'hand' },
   f: { tool: 'frame', frameKind: 'frame' },
+  s: { tool: 'frame', frameKind: 'section' },
   r: { tool: 'shape', shapeKind: 'rectangle' },
   l: { tool: 'shape', shapeKind: 'line' },
   o: { tool: 'shape', shapeKind: 'ellipse' },
   t: { tool: 'text' },
   i: { tool: 'inspect' },
 };
+
+/**
+ * Tools that make something and then hand back to Select, the way every
+ * direct-manipulation editor does — you draw one rectangle, not a field of
+ * them. Hand, Select and Inspect are modes and stay put.
+ */
+export function revertsToSelect(tool: DesignTool): boolean {
+  return tool === 'frame' || tool === 'shape' || tool === 'text';
+}
 
 export function toolForKey(key: string): ToolSelection | null {
   if (key.length !== 1) return null; // 'F5', 'Tab', … are never tool shortcuts

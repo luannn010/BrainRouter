@@ -37,6 +37,15 @@ export interface DesignAnnotation extends StageRect {
    *  canvas document while annotations live per-prototype, so this can dangle
    *  if the component is deleted — readers treat a missing id as unpacked. */
   componentId?: string;
+  // --- appearance (see annotationStyle.ts) — unset means "the kind's default" ---
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  radius?: number;
+  /** Percentage, 0–100. */
+  opacity?: number;
+  fontSize?: number;
+  fontWeight?: number;
 }
 
 /** Drags smaller than this are treated as clicks, not draws. */
@@ -314,6 +323,14 @@ function parseAnnotation(value: unknown): DesignAnnotation | null {
   if (a.mask === true) parsed.mask = true;
   if (typeof a.groupId === 'string' && a.groupId.trim()) parsed.groupId = a.groupId;
   if (typeof a.componentId === 'string' && a.componentId.trim()) parsed.componentId = a.componentId;
+  // Appearance. Colours are re-checked on the way out too (cssForAnnotation),
+  // so a hand-edited store cannot smuggle a value into an inline style.
+  if (typeof a.fill === 'string' && a.fill.trim()) parsed.fill = a.fill;
+  if (typeof a.stroke === 'string' && a.stroke.trim()) parsed.stroke = a.stroke;
+  for (const field of ['strokeWidth', 'radius', 'opacity', 'fontSize', 'fontWeight'] as const) {
+    const value = a[field];
+    if (typeof value === 'number' && Number.isFinite(value)) parsed[field] = value;
+  }
   if (typeof a.path === 'string' && a.path.trim()) parsed.path = a.path;
   const autoLayout = parseAutoLayout(a.autoLayout);
   if (autoLayout) parsed.autoLayout = autoLayout;
