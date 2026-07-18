@@ -26,7 +26,7 @@ import { DEVICE_SIZE, DesignScreen } from './DesignScreen.js';
 import { DesignBottomToolbar } from './DesignBottomToolbar.js';
 import { StageOverlay } from './StageOverlay.js';
 import { DesignInspector, type InspectorTab } from './DesignInspector.js';
-import { DesignResourceRail, type DesignResource } from './DesignResourceRail.js';
+import { COMPONENT_DRAG_TYPE, DesignResourceRail, type DesignResource } from './DesignResourceRail.js';
 import { CanvasRulers } from './CanvasRulers.js';
 import type { PrototypesApi } from '../../lib/design/usePrototypes.js';
 import type { PrototypeFrame } from '../../lib/design/useCanvasFrames.js';
@@ -465,6 +465,32 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     }
   };
 
+  // Dropping a saved component places it as a screen-sized frame at the drop
+  // point, so it becomes something you can position and annotate like anything
+  // else on the board.
+  const onCanvasDrop = (e: React.DragEvent<HTMLDivElement>): void => {
+    const id = e.dataTransfer.getData(COMPONENT_DRAG_TYPE);
+    if (!id) return;
+    e.preventDefault();
+    const component = canvas.document.components.find((item) => item.id === id);
+    const shell = shellRef.current;
+    if (!component || !shell) return;
+    const rect = shell.getBoundingClientRect();
+    const at = screenToWorld(viewRef.current, e.clientX - rect.left, e.clientY - rect.top);
+    const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
+    const placed = createAnnotation('frame', {
+      x: snapTo(at.x, grid), y: snapTo(at.y, grid), w: component.width, h: component.height,
+    }, { label: component.name });
+    changeAnnotations([...annotations, placed]);
+    setAnnoIds([placed.id]);
+    setScreenNotice(`Placed "${component.name}" on ${protos.selected?.title ?? 'the screen'}.`);
+  };
+  const onCanvasDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
+    if (!e.dataTransfer.types.includes(COMPONENT_DRAG_TYPE)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+
   const setZoomPercent = (percent: number): void => {
     const shell = shellRef.current;
     if (!shell) return;
@@ -527,10 +553,12 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   };
 
   return <div className="ds-designs ds-design-editor">
-    <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer} />
+    <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer}
+      components={canvas.document.components}
+      onDeleteComponent={(id) => canvas.save({ ...canvas.document, components: canvas.document.components.filter((item) => item.id !== id) })} />
     <main className="ds-editor-stage">
       <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => applyDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
-      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu}>
+      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu} onDragOver={onCanvasDragOver} onDrop={onCanvasDrop}>
         <div className="ds-design-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
           {shownNodes.map((node) => <DesignScreen key={node.prototypeId} node={node}
             title={titleById.get(node.prototypeId) ?? node.prototypeId}

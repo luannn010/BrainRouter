@@ -41,7 +41,11 @@ BrainRouter’s desktop Design Studio uses a dark, instrument-like editor surfac
 
 ### Resource rail
 
-The left rail exposes Files, Assets, Components, Scales, and Design. Files selects prototype flows. Assets, Components, and Scales are read-only inventories derived from the selected HTML. Design shows the semantic layer tree, with indentation reflecting DOM depth and Signal/blue selection treatment.
+The left rail exposes Files, Assets, Components, Scales, and Design. Files selects prototype flows. Assets and Scales are read-only inventories derived from the selected HTML. Design shows the semantic layer tree, with indentation reflecting DOM depth and Signal/blue selection treatment.
+
+Components has two parts: **Saved** components persisted in the canvas document, and below them the read-only component candidates derived from the current HTML. A saved component is draggable — dropping it on the canvas places it at the drop point, snapped to the grid.
+
+A saved component's thumbnail renders inside an iframe with a **fully empty `sandbox`** (no `allow-scripts`). Component markup can come from a model, and this rail lives in the renderer origin that holds the bridge — rejecting `<script>` at generation time is not sufficient on its own, because an inline `onerror=` handler would still run. The sandbox is what actually makes it inert.
 
 ### Prototype stage
 

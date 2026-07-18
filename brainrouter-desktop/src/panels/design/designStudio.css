@@ -309,6 +309,13 @@
 .design-studio .ds-quickchat-error { margin:0; color:var(--ds-danger); font-size:12px; }
 .design-studio .ds-quickchat-actions { display:flex; justify-content:flex-end; gap:8px; }
 .design-studio .ds-iconbtn.is-primary { border-color:var(--ds-accent); color:var(--ds-accent); }
+/* --- Saved components in the resource rail --- */
+.design-studio .ds-component-list li { margin-bottom:6px; }
+.design-studio .ds-component-card { display:grid; grid-template-columns:40px 1fr auto auto; align-items:center; gap:8px; padding:6px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-surface-2); cursor:grab; }
+.design-studio .ds-component-card:active { cursor:grabbing; }
+.design-studio .ds-component-preview { width:40px; height:32px; border:0; border-radius:4px; background:var(--ds-bg); pointer-events:none; }
+.design-studio .ds-component-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.design-studio .ds-component-card small { color:var(--ds-text-3); font:9px var(--ds-mono); }
 /* --- Annotation layer (Frame / Shape / Text tools) — host DOM above the
        preview surface; never part of the prototype's HTML. --- */
 .design-studio .ds-anno-layer { position:absolute; inset:0; z-index:3; pointer-events:none; user-select:none; }
