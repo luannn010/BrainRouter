@@ -4,6 +4,7 @@
 // icon rows carry a title + aria-label instead of visible text.
 import React, { useState } from 'react';
 import { Icon } from '../../../icons.js';
+import { MIXED, SCRUB_THRESHOLD, scrubbedValue } from '../../../lib/design/inspectorFields.js';
 
 export function Section({ title, icon, action, defaultOpen = true, children }: { title: string; icon?: string; action?: React.ReactNode; defaultOpen?: boolean; children: React.ReactNode }): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen);
@@ -24,12 +25,46 @@ export function Row({ children }: { children: React.ReactNode }): React.ReactEle
   return <div className="ds-inspector-grid">{children}</div>;
 }
 
-export function Field({ label, value, onChange, prefix, suffix, type = 'text', options, placeholder, title, disabled }: { label: string; value: string; onChange: (value: string) => void; prefix?: string; suffix?: string; type?: 'text' | 'number'; options?: readonly { value: string; label: string }[]; placeholder?: string; title?: string; disabled?: boolean }): React.ReactElement {
+export function Field({ label, value, onChange, prefix, suffix, type = 'text', options, placeholder, title, disabled, step = 1 }: { label: string; value: string; onChange: (value: string) => void; prefix?: string; suffix?: string; type?: 'text' | 'number'; options?: readonly { value: string; label: string }[]; placeholder?: string; title?: string; disabled?: boolean; step?: number }): React.ReactElement {
+  // A disagreeing multi-selection shows an EMPTY input placeholdered "Mixed"
+  // rather than the literal word as its value, as OpenPencil's NumberField
+  // does. That keeps type="number" legal (which "Mixed" would not be) and means
+  // typing replaces cleanly instead of editing a label.
+  const mixed = value === MIXED;
+  const scrubbable = type === 'number' && !disabled && !options;
+
+  // Drag anywhere on the field to scrub it — the single biggest speed-up in a
+  // properties panel, and how every design tool behaves. Pointer capture keeps
+  // the drag alive outside the input; the 2px threshold leaves a plain click
+  // free to focus and type.
+  const onScrubStart = (event: React.PointerEvent<HTMLSpanElement>): void => {
+    if (!scrubbable) return;
+    const start = Number(mixed ? 0 : value);
+    if (!Number.isFinite(start)) return;
+    const originX = event.clientX;
+    const host = event.currentTarget;
+    let scrubbing = false;
+    const onMove = (move: PointerEvent): void => {
+      const dx = move.clientX - originX;
+      if (!scrubbing && Math.abs(dx) <= SCRUB_THRESHOLD) return;
+      scrubbing = true;
+      host.classList.add('is-scrubbing');
+      onChange(String(scrubbedValue(start, dx, step, 1)));
+    };
+    const onUp = (): void => {
+      host.classList.remove('is-scrubbing');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   return <label className={`ds-field${disabled ? ' is-disabled' : ''}`} title={title ?? label}>
     <span className="ds-field-label">{label}</span>
     {options
       ? <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      : <span className="ds-field-input">{prefix ? <i className="ds-field-affix" aria-hidden>{prefix}</i> : null}<input type={type} value={value} placeholder={placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value)} />{suffix ? <i className="ds-field-affix ds-field-affix--end" aria-hidden>{suffix}</i> : null}</span>}
+      : <span className={`ds-field-input${scrubbable ? ' is-scrubbable' : ''}`} onPointerDown={onScrubStart}>{prefix ? <i className="ds-field-affix" aria-hidden>{prefix}</i> : null}<input type={type} value={mixed ? '' : value} placeholder={mixed ? MIXED : placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value)} />{suffix ? <i className="ds-field-affix ds-field-affix--end" aria-hidden>{suffix}</i> : null}</span>}
   </label>;
 }
 

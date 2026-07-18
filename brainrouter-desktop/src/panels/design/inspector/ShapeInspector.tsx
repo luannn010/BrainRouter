@@ -1,11 +1,13 @@
 // brainrouter-desktop/src/panels/design/inspector/ShapeInspector.tsx
-// Properties for a selected canvas shape, mirroring what OpenPencil's Design
-// tab exposes: position and size, appearance (opacity, corner radius), fill,
-// stroke, and type size/weight for text. Editing applies to the whole
+// Properties for the selected canvas shapes. Section order follows OpenPencil's
+// DesignPanel — Position, Appearance, Typography, Fill, Stroke — and, as it
+// does, Typography is dropped from a multi-selection rather than shown for
+// whichever member happens to be first. Editing applies to the whole
 // selection, so changing a fill with three shapes selected fills all three.
 import React from 'react';
 import type { DesignAnnotation } from '../../../lib/design/designAnnotations.js';
 import { styleValue, type StyleField } from '../../../lib/design/annotationStyle.js';
+import { isCommittable, sharedValue } from '../../../lib/design/inspectorFields.js';
 import { Field, Row, Section, Swatch } from './InspectorControls.js';
 
 /** Kinds whose box is painted; a line or a baked path has no fill of its own. */
@@ -19,19 +21,25 @@ export function ShapeInspector({ selected, onGeometry, onStyle }: {
 }): React.ReactElement | null {
   const head = selected[0];
   if (!head) return null;
-  /** With a mixed selection the first shape leads, as it does in Figma. */
-  const style = (field: StyleField): string => String(styleValue(head, field));
-  const number = (field: StyleField) => (value: string): void => { if (value.trim()) onStyle(field, Number(value)); };
+  const many = selected.length > 1;
+
+  // Every field speaks for the WHOLE selection. Reading `head` alone showed the
+  // first shape's value as though it were the selection's, so editing it
+  // silently overwrote the others with a number the user never saw.
+  const style = (field: StyleField): string => sharedValue(selected.map((shape) => String(styleValue(shape, field))));
+  const geometry = (field: 'x' | 'y' | 'w' | 'h'): string => sharedValue(selected.map((shape) => String(Math.round(shape[field]))));
+  const number = (field: StyleField) => (value: string): void => { if (isCommittable(value)) onStyle(field, Number(value)); };
+  const geo = (field: 'x' | 'y' | 'w' | 'h') => (value: string): void => { if (isCommittable(value)) onGeometry(field, Number(value)); };
 
   return <>
     <Section title="Position" icon="constraint">
       <Row>
-        <Field label="X" type="number" value={String(Math.round(head.x))} onChange={(v) => { if (v.trim()) onGeometry('x', Number(v)); }} />
-        <Field label="Y" type="number" value={String(Math.round(head.y))} onChange={(v) => { if (v.trim()) onGeometry('y', Number(v)); }} />
+        <Field label="X" type="number" value={geometry('x')} onChange={geo('x')} />
+        <Field label="Y" type="number" value={geometry('y')} onChange={geo('y')} />
       </Row>
       <Row>
-        <Field label="W" type="number" value={String(Math.round(head.w))} onChange={(v) => { if (v.trim()) onGeometry('w', Number(v)); }} />
-        <Field label="H" type="number" value={String(Math.round(head.h))} onChange={(v) => { if (v.trim()) onGeometry('h', Number(v)); }} />
+        <Field label="W" type="number" value={geometry('w')} onChange={geo('w')} />
+        <Field label="H" type="number" value={geometry('h')} onChange={geo('h')} />
       </Row>
     </Section>
 
@@ -43,6 +51,15 @@ export function ShapeInspector({ selected, onGeometry, onStyle }: {
           : <Field label="Radius" value="—" disabled title={`A ${head.kind} has no corners to round.`} onChange={() => undefined} />}
       </Row>
     </Section>
+
+    {head.kind === 'text' && !many ? (
+      <Section title="Typography" icon="text">
+        <Row>
+          <Field label="Size" type="number" value={style('fontSize')} onChange={number('fontSize')} />
+          <Field label="Weight" type="number" step={100} value={style('fontWeight')} onChange={number('fontWeight')} />
+        </Row>
+      </Section>
+    ) : null}
 
     <Section title="Fill" icon="palette">
       {FILLABLE.has(head.kind)
@@ -58,15 +75,6 @@ export function ShapeInspector({ selected, onGeometry, onStyle }: {
       </Row>
     </Section>
 
-    {head.kind === 'text' ? (
-      <Section title="Typography" icon="text">
-        <Row>
-          <Field label="Size" type="number" value={style('fontSize')} onChange={number('fontSize')} />
-          <Field label="Weight" type="number" value={style('fontWeight')} onChange={number('fontWeight')} />
-        </Row>
-      </Section>
-    ) : null}
-
-    {selected.length > 1 ? <p className="ds-inspector-hint">{selected.length} layers selected — edits apply to all of them.</p> : null}
+    {many ? <p className="ds-inspector-hint">{selected.length} layers selected — edits apply to all of them.</p> : null}
   </>;
 }

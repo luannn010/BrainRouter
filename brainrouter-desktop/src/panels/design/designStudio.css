@@ -490,3 +490,12 @@
 .design-studio .ds-guide { position:absolute; pointer-events:none; z-index:1200; background:#FF008F; }
 .design-studio .ds-guide--x { width:1px; }
 .design-studio .ds-guide--y { height:1px; }
+
+/* A numeric field is a scrub target: dragging across it changes the value.
+   The resize cursor advertises it; the 2px threshold leaves a click free to
+   focus and type, so the input keeps working as an input. */
+.design-studio .ds-field-input.is-scrubbable { cursor:ew-resize; }
+.design-studio .ds-field-input.is-scrubbable input { cursor:ew-resize; }
+.design-studio .ds-field-input.is-scrubbable input:focus { cursor:text; }
+.design-studio .ds-field-input.is-scrubbing { border-color:var(--ds-accent); }
+.design-studio .ds-field-input.is-scrubbing input { user-select:none; }

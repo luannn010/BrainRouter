@@ -21,10 +21,20 @@ export function DesignInspector({ element, measured, tab, onTabChange, operation
       <div className="ds-inspector-head"><Icon name={shapes[0].kind === 'text' ? 'text' : 'square'} size={13} /><strong>{shapes[0].label.trim() || shapes[0].kind}</strong><small data-mono>{shapes.length > 1 ? `${shapes.length} layers` : shapes[0].kind}</small></div>
       <ShapeInspector selected={shapes} onGeometry={onShapeGeometry} onStyle={onShapeStyle} />
     </>}
+    {/* Code and AI describe the prototype's HTML, which a canvas shape has
+        none of. Gating them on `element` alone left the whole aside blank
+        whenever a shape was selected — a dead end with nothing to explain it. */}
+    {shapeMode && tab !== 'design' && <div className="ds-inspector-panel">
+      <span className="ds-eyebrow">{tab === 'code' ? 'Canvas shape' : 'AI edit target'}</span>
+      <p className="ds-inspector-copy">
+        {shapes.length > 1 ? `${shapes.length} canvas layers are selected.` : `A canvas ${shapes[0].kind} is selected.`}
+        {' '}Canvas shapes live on the annotation layer, not in the prototype&rsquo;s HTML, so there is no markup to show here or to hand to the chat. Use Inspect to pick a real element first.
+      </p>
+    </div>}
     {!shapeMode && !element && <div className="ds-inspector-empty"><Icon name="edit" size={18} /><p>Select a layer or use Inspect to edit the prototype.</p></div>}
     {!shapeMode && element && tab === 'design' && <DesignTab element={element} measured={measured} operations={operations} onOperationChange={onOperationChange} onSave={onSave} onRevert={onRevert} />}
-    {element && tab === 'code' && <CodeProperties element={element} measured={measured} />}
-    {element && tab === 'ai' && <div className="ds-inspector-panel"><span className="ds-eyebrow">AI edit target</span><h2 className="ds-inspector-title">{layerDisplayName(element)}</h2><p className="ds-inspector-copy">Fix Chat will receive this element reference and the current draft properties.</p><code className="ds-code-block">{element.testid ? `[data-testid="${element.testid}"]` : element.ref}</code><button type="button" className="ds-iconbtn ds-iconbtn--accent ds-inspector-wide" onClick={onOpenAi}><Icon name="spark" size={13} /> Open Fix Chat</button></div>}
+    {!shapeMode && element && tab === 'code' && <CodeProperties element={element} measured={measured} />}
+    {!shapeMode && element && tab === 'ai' && <div className="ds-inspector-panel"><span className="ds-eyebrow">AI edit target</span><h2 className="ds-inspector-title">{layerDisplayName(element)}</h2><p className="ds-inspector-copy">Fix Chat will receive this element reference and the current draft properties.</p><code className="ds-code-block">{element.testid ? `[data-testid="${element.testid}"]` : element.ref}</code><button type="button" className="ds-iconbtn ds-iconbtn--accent ds-inspector-wide" onClick={onOpenAi}><Icon name="spark" size={13} /> Open Fix Chat</button></div>}
   </aside>;
 }
 
