@@ -14,8 +14,12 @@ import {
   registerExtensionTool,
   registerExtensionProvider,
   registerExtensionHook,
+  registerExtensionPanel,
   type ExtensionHookHandler,
+  type PanelContribution,
 } from './registry.js';
+import { registerBuiltinCapability } from './builtin/capabilities.js';
+import type { ExtensionSource } from './manifest.js';
 
 /** The ergonomic shape an extension passes to `host.registerTool`. */
 export interface ExtensionToolDef {
@@ -40,10 +44,17 @@ export interface ExtensionHost {
   registerProvider(def: ProviderDefinition): void;
   /** Attach a typed lifecycle handler (in-process analogue of a shell hook). */
   registerHook(handler: ExtensionHookHandler): void;
+  /** Contribute a serializable UI panel descriptor the desktop renderer maps to a view. */
+  registerPanel(descriptor: PanelContribution): void;
   /** Structured logger scoped to the extension name. */
   readonly log: (msg: string, fields?: Record<string, unknown>) => void;
   readonly workspaceRoot: string;
   readonly version: string;
+}
+
+/** Privileged host shape used only for required extensions shipped inside core. */
+export interface BuiltinExtensionHost extends ExtensionHost {
+  registerCoreCapability(name: string): void;
 }
 
 /** The single entrypoint an extension module must export. */
@@ -64,8 +75,13 @@ class ExtensionToolExecutor implements LocalToolExecutor {
 }
 
 /** Build a host bound to one extension; its registrations are attributed to `name`. */
-export function createExtensionHost(name: string, workspaceRoot: string, version: string): ExtensionHost {
-  return {
+export function createExtensionHost(
+  name: string,
+  workspaceRoot: string,
+  version: string,
+  options: { source?: ExtensionSource; required?: boolean } = {},
+): ExtensionHost {
+  const host: ExtensionHost & Partial<BuiltinExtensionHost> = {
     workspaceRoot,
     version,
     log: (msg, fields) => console.error(`[ext:${name}] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`),
@@ -76,9 +92,16 @@ export function createExtensionHost(name: string, workspaceRoot: string, version
         actionKind: def.actionKind,
         parallelSafe: def.parallelSafe ?? false,
       };
-      registerExtensionTool(entry, new ExtensionToolExecutor(def), name);
+      registerExtensionTool(entry, new ExtensionToolExecutor(def), name, { required: false });
     },
     registerProvider: (def) => registerExtensionProvider(def, name),
     registerHook: (handler) => registerExtensionHook(handler, name),
+    registerPanel: (descriptor) => registerExtensionPanel(descriptor, name),
   };
+  // The public host never contains this port. Arbitrary user/workspace code can
+  // register argument-only tools, but cannot obtain the Agent runtime bridge.
+  if (options.source === 'builtin' && options.required) {
+    host.registerCoreCapability = (capability) => registerBuiltinCapability(capability);
+  }
+  return host;
 }

@@ -1,7 +1,7 @@
 // brainrouter-desktop/src/panels/design/InspectorRail.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import type { WebviewEl } from '../../lib/uitest/webviewBridge.js';
-import { startPick, readPick, cancelPick, a11ySnapshot, tap, typeText } from '../../lib/uitest/webviewBridge.js';
+import type { WebviewEl } from '../../lib/browser/webviewBridge.js';
+import { startPick, readPick, cancelPick, a11ySnapshot, tap, typeText } from '../../lib/browser/webviewBridge.js';
 import type { PreviewHandle } from './PreviewCanvas.js';
 
 /**

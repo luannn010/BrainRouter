@@ -4,7 +4,7 @@
  * without a cycle back through the composed shell.
  */
 import type { SettingsSection } from '../../lib/commands/commands.js';
-import type { ConnectorCatalogEntry, ConnectorRecord, ConnectorRunRecord } from '@kinqs/brainrouter-types';
+import type { ConnectorCatalogEntry, ConnectorRecord, ConnectorRunRecord, ModelPolicy } from '@kinqs/brainrouter-types';
 import type { ConfigSchemaDescriptor } from '@kinqs/brainrouter-core/config';
 
 export interface ConnectorSlimPreview {
@@ -19,6 +19,16 @@ export interface ConfigSnapshot {
   model?: string;
   provider?: string;
   endpoint?: string | null;
+  accountModels?: {
+    signedIn: boolean;
+    provider: { id: 'brainrouter'; label: 'BrainRouter'; readOnly: true };
+    revision: string | null;
+    etag: string | null;
+    models: ModelPolicy[];
+    stale: boolean;
+    refreshedAt: string | null;
+    error?: string;
+  };
   fallbackModel?: string | null;
   workspaceRoot?: string;
   sandbox?: 'on' | 'off';
@@ -256,7 +266,7 @@ export const CHECKPOINT_RUNTIME_SOURCES = new Set<ConnectorRecord['source']>([
 export type GithubOauthState =
   | { status: 'idle'; hasToken?: boolean; storageMode?: string }
   | { status: 'starting' }
-  | { status: 'pending'; userCode: string; verificationUri: string; intervalSec: number; expiresAtMs: number }
+  | { status: 'pending'; flow: 'browser' | 'device'; userCode?: string; verificationUri?: string; intervalSec: number; expiresAtMs: number }
   | { status: 'authorized'; scope?: string; storageMode?: string }
   | { status: 'error'; error: string };
 

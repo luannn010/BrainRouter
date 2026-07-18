@@ -2,10 +2,34 @@
 
 import Link from "next/link";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { ModelPolicy } from "@kinqs/brainrouter-types";
 import { AuthGuard } from "../../components/AuthGuard";
 import { KnowledgeScopePicker, useKnowledgeScope } from "../../components/KnowledgeScopePicker";
-import { Markdown } from "../../components/Markdown";
-import { brainApi, type BrainChatCitation, type BrainChatMessage } from "../../lib/brainApi";
+import { LazyMarkdown } from "../../components/LazyMarkdown";
+import { brainApi } from "../../lib/brainApi";
+import { adminApi } from "../../lib/adminApi";
+import { isAuthenticated } from "../../lib/client-auth";
+import { normalizeChatModelSelection, type ChatModelSelection } from "./chatModelSelection";
+import { InlineLoading } from "../../components/LoadingSpinner";
+import {
+  loadChatSessions,
+  sameChatScope,
+  saveChatSessions,
+  sessionTitle,
+  upsertChatSession,
+  type StoredChatMessage,
+  type StoredChatSession,
+} from "./chatSessions";
+import {
+  createChatThread,
+  deleteChatThread,
+  getChatThread,
+  listChatThreads,
+  mergeServerThreads,
+  replaceChatMessages,
+  serverMessageToStored,
+  toServerMessages,
+} from "../../lib/chatThreads";
 
 const categories = ["General", "Build", "Plan", "Recall", "Knowledge", "Review"] as const;
 type ChatCategory = (typeof categories)[number];
@@ -13,64 +37,176 @@ const suggestions: Record<ChatCategory, ReadonlyArray<readonly [string, string]>
   General: [
     ["Move a task forward", "Help me choose the next concrete step for the task in this workspace."],
     ["Understand this project", "Summarize the project, its current state, and the most important open work."],
-    ["Prepare useful context", "Assemble the project knowledge and source material that can help with my next task."],
     ["Check recent work", "Review what changed recently and tell me what still needs attention."],
   ],
   Build: [
     ["Plan an implementation", "Turn my requested change into a focused implementation and verification plan."],
     ["Trace a code path", "Find the code path behind the behavior I describe and explain how its parts connect."],
     ["Diagnose a failure", "Use the available project context to narrow down the cause of a failing behavior."],
-    ["Prepare a verification pass", "List the highest-value checks for the change I am about to make."],
   ],
   Plan: [
     ["Break down an outcome", "Turn my goal into ordered milestones, dependencies, and concrete next actions."],
     ["Prioritize the backlog", "Help me rank the current work by impact, urgency, and dependency risk."],
-    ["Surface missing decisions", "Identify the product or technical decisions that are still blocking progress."],
     ["Draft acceptance criteria", "Write measurable acceptance criteria for the task I am planning."],
   ],
   Recall: [
     ["Inspect recent recalls", "Show which saved context has been most useful in my latest agent sessions."],
-    ["Explain a recall", "Trace why a memory was selected and which signals affected its score."],
     ["Find an earlier decision", "Recall the decision related to the topic I describe and include its evidence."],
     ["Prepare agent context", "Assemble the most relevant recalled context for the task I am starting next."],
   ],
   Knowledge: [
     ["Inspect saved knowledge", "Show what BrainRouter captured from my latest agent sessions and connected sources."],
     ["Find source evidence", "Find the source material that supports what BrainRouter knows about the topic I describe."],
-    ["Resolve contradictions", "Find conflicting facts and help me choose the current source of truth."],
     ["Find a knowledge gap", "Show where the selected project or workspace is missing useful durable context."],
   ],
   Review: [
     ["Review recent changes", "Assess the latest project changes for correctness, regressions, and missing tests."],
     ["Check delivery readiness", "Tell me what evidence is still missing before this work is ready to ship."],
-    ["Summarize review findings", "Group the latest review findings by severity and recommended next action."],
     ["Verify an outcome", "Build a concise verification checklist for the outcome I describe."],
   ],
 };
 
-interface ConversationMessage extends BrainChatMessage {
-  id: string;
-  citations?: BrainChatCitation[];
-  recallStrategy?: string;
-}
-
 function nextId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isCategory(value: string): value is ChatCategory {
+  return (categories as readonly string[]).includes(value);
 }
 
 function ChatContent() {
   const scopeState = useKnowledgeScope();
   const [category, setCategory] = useState<ChatCategory>("General");
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [messages, setMessages] = useState<StoredChatMessage[]>([]);
+  const [sessions, setSessions] = useState<StoredChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
+  const [creatingNew, setCreatingNew] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [threadsLoading, setThreadsLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [showScope, setShowScope] = useState(false);
+  const [models, setModels] = useState<readonly ModelPolicy[]>([]);
+  const [modelSelection, setModelSelection] = useState<ChatModelSelection>({ model: "", reasoningEffort: "" });
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
   const sessionKey = useRef("");
   const threadEnd = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const currentScope = useRef(scopeState.scope);
+  currentScope.current = scopeState.scope;
+  // Ids known to exist on the server, so a send/rename/delete targets the right
+  // plane (append/replace vs. create) without a per-id round-trip.
+  const serverThreadIds = useRef<Set<string>>(new Set());
+  // Latest sessions, readable inside async closures without a stale snapshot.
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
 
-  useEffect(() => { threadEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, sending]);
+  useEffect(() => {
+    setSessions(loadChatSessions(window.localStorage));
+    setHydrated(true);
+  }, []);
+
+  // Server reconciliation — the server is the source of truth for which threads
+  // exist. Fetch the caller's threads for the active org, merge them over the
+  // local cache, and run the one-time localStorage→server migration for any
+  // local-only threads. Signed-out or offline falls back to the local cache.
+  useEffect(() => {
+    if (!hydrated || scopeState.loading || !isAuthenticated()) return;
+    const orgId = scopeState.scope.orgId || undefined;
+    const scopeSnapshot = { ...currentScope.current };
+    let cancelled = false;
+    setThreadsLoading(true);
+    (async () => {
+      try {
+        const remote = await listChatThreads(orgId);
+        if (cancelled) return;
+        remote.forEach((thread) => serverThreadIds.current.add(thread.id));
+        const merged = mergeServerThreads(sessionsRef.current, remote, scopeSnapshot);
+        const rekeys = new Map<string, string>();
+        for (const stale of merged.unsynced) {
+          try {
+            const thread = await createChatThread(
+              { title: stale.title, model: stale.model, messages: toServerMessages(stale.messages) },
+              orgId,
+            );
+            serverThreadIds.current.add(thread.id);
+            rekeys.set(stale.id, thread.id);
+          } catch { /* offline/failed — keep the local copy, retry on next load */ }
+        }
+        if (cancelled) return;
+        const reconciled = merged.sessions.map((item) => {
+          const migratedId = rekeys.get(item.id);
+          return migratedId ? { ...item, id: migratedId } : item;
+        });
+        setSessions(reconciled);
+        saveChatSessions(window.localStorage, reconciled);
+        const activeMigrated = rekeys.get(sessionKey.current);
+        if (activeMigrated) { sessionKey.current = activeMigrated; setActiveSessionId(activeMigrated); }
+      } catch { /* server unreachable — keep the local cache, never crash the page */ }
+      finally { if (!cancelled) setThreadsLoading(false); }
+    })();
+    return () => { cancelled = true; };
+    // Threads are org-scoped server-side, so only the active org drives a refetch.
+  }, [hydrated, scopeState.loading, scopeState.scope.orgId]);
+
+  useEffect(() => {
+    if (scopeState.loading) return;
+    let cancelled = false;
+    setModelsLoading(true);
+    setModelsError("");
+    adminApi.modelCatalog(scopeState.scope.orgId || undefined).then((catalog) => {
+      if (cancelled) return;
+      setModels(catalog.models);
+      setModelSelection((current) => normalizeChatModelSelection(catalog.models, current));
+    }).catch((caught) => {
+      if (cancelled) return;
+      setModels([]);
+      setModelsError(caught instanceof Error ? caught.message : "Could not load managed models");
+    }).finally(() => {
+      if (!cancelled) setModelsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [scopeState.loading, scopeState.scope.orgId]);
+
+  useEffect(() => {
+    threadEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, sending]);
+
+  const scopedSessions = useMemo(
+    () => sessions.filter((item) => sameChatScope(item.scope, scopeState.scope)),
+    [scopeState.scope, sessions],
+  );
+
+  useEffect(() => {
+    if (!hydrated || scopeState.loading || creatingNew) return;
+    const active = sessions.find((item) => item.id === activeSessionId);
+    if (active && sameChatScope(active.scope, scopeState.scope)) {
+      setModelSelection((current) => normalizeChatModelSelection(models, current.model ? current : {
+        model: active.model,
+        reasoningEffort: active.reasoningEffort,
+      }));
+      return;
+    }
+    const next = sessions.find((item) => sameChatScope(item.scope, scopeState.scope));
+    if (next) {
+      setActiveSessionId(next.id);
+      sessionKey.current = next.id;
+      setMessages(next.messages);
+      setCategory(isCategory(next.category) ? next.category : "General");
+      setModelSelection(normalizeChatModelSelection(models, {
+        model: next.model,
+        reasoningEffort: next.reasoningEffort,
+      }));
+    } else {
+      setActiveSessionId("");
+      sessionKey.current = "";
+      setMessages([]);
+      setDraft("");
+      setError("");
+    }
+  }, [activeSessionId, creatingNew, hydrated, models, scopeState.loading, scopeState.scope, sessions]);
 
   const addSourceHref = useMemo(() => {
     const query = new URLSearchParams({ panel: "connections" });
@@ -79,27 +215,112 @@ function ChatContent() {
     return `/integrations?${query.toString()}`;
   }, [scopeState.scope.orgId, scopeState.scope.projectId]);
 
+  function persist(
+    id: string,
+    nextMessages: StoredChatMessage[],
+    nextCategory = category,
+    storedScope = scopeState.scope,
+    selection = modelSelection,
+  ) {
+    const next: StoredChatSession = {
+      id,
+      title: sessionTitle(nextMessages),
+      category: nextCategory,
+      scope: { ...storedScope },
+      messages: nextMessages,
+      ...(selection.model ? { model: selection.model } : {}),
+      ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    setSessions((current) => {
+      const updated = upsertChatSession(current, next);
+      saveChatSessions(window.localStorage, updated);
+      return updated;
+    });
+  }
+
+  /** Rewrite a locally-minted thread id to the server id it was assigned, in
+   * both the session list and the active selection, then re-cache. */
+  function rekeySession(oldId: string, newId: string) {
+    if (oldId === newId) return;
+    setSessions((current) => {
+      const found = current.find((item) => item.id === oldId);
+      const rest = current.filter((item) => item.id !== oldId && item.id !== newId);
+      const next = found
+        ? [{ ...found, id: newId }, ...rest].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        : rest;
+      saveChatSessions(window.localStorage, next);
+      return next;
+    });
+    if (sessionKey.current === oldId) {
+      sessionKey.current = newId;
+      setActiveSessionId(newId);
+    }
+  }
+
+  /** Push a finished turn to the server so a second device sees it: create the
+   * thread on its first turn (rekeying the local id), else replace-sync the
+   * history up. Best-effort — a failure leaves the local cache authoritative. */
+  async function syncSessionToServer(
+    localId: string,
+    wasOnServer: boolean,
+    completed: readonly StoredChatMessage[],
+    storedScope: StoredChatSession["scope"],
+    selection: ChatModelSelection,
+  ) {
+    if (!isAuthenticated()) return;
+    const orgId = storedScope.orgId || undefined;
+    const serverMessages = toServerMessages(completed);
+    try {
+      if (wasOnServer || serverThreadIds.current.has(localId)) {
+        await replaceChatMessages(localId, serverMessages, orgId);
+      } else {
+        const thread = await createChatThread(
+          { title: sessionTitle(completed), model: selection.model || undefined, messages: serverMessages },
+          orgId,
+        );
+        serverThreadIds.current.add(thread.id);
+        rekeySession(localId, thread.id);
+      }
+    } catch { /* offline/failed — the local cache still holds the turn; retry later */ }
+  }
+
   async function sendMessage() {
     const content = draft.trim();
     if (!content || sending) return;
-    const userMessage: ConversationMessage = { id: nextId("user"), role: "user", content };
-    const history = [...messages, userMessage].map(({ role, content: text }) => ({ role, content: text }));
-    setMessages((current) => [...current, userMessage]);
+    const requestScope = { ...scopeState.scope };
+    const requestSelection = { ...modelSelection };
+    const id = activeSessionId || nextId("dashboard_chat");
+    const wasOnServer = serverThreadIds.current.has(id);
+    const userMessage: StoredChatMessage = { id: nextId("user"), role: "user", content };
+    const history = [...messages, userMessage];
+    if (!activeSessionId) setActiveSessionId(id);
+    setCreatingNew(false);
+    sessionKey.current = id;
+    setMessages(history);
+    persist(id, history, category, requestScope, requestSelection);
     setDraft("");
     setSending(true);
     setError("");
-    if (!sessionKey.current) sessionKey.current = nextId("dashboard_chat");
     try {
-      const result = await brainApi.chat(history.slice(-20), sessionKey.current, scopeState.scope);
+      const result = await brainApi.chat(
+        history.slice(-20).map(({ role, content: text }) => ({ role, content: text })),
+        id,
+        requestScope,
+        requestSelection,
+      );
       if (result.message?.role !== "assistant" || !result.message.content?.trim()) {
         throw new Error("The agent returned an empty response");
       }
-      setMessages((current) => [...current, {
+      const completed: StoredChatMessage[] = [...history, {
         ...result.message,
         id: nextId("assistant"),
         citations: result.citations ?? [],
         recallStrategy: result.recallStrategy,
-      }]);
+      }];
+      persist(id, completed, category, requestScope, requestSelection);
+      if (sameChatScope(requestScope, currentScope.current)) setMessages(completed);
+      void syncSessionToServer(id, wasOnServer, completed, requestScope, requestSelection);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The agent could not answer");
     } finally {
@@ -108,14 +329,84 @@ function ChatContent() {
   }
 
   function newConversation() {
+    setCreatingNew(true);
+    setActiveSessionId("");
+    sessionKey.current = "";
     setMessages([]);
     setDraft("");
     setError("");
-    sessionKey.current = "";
+    requestAnimationFrame(() => composer.current?.focus());
+  }
+
+  /** Fill a skeleton thread (one synced from another device, so it has no cached
+   * body) from the server the first time it's opened. Never clobbers a local
+   * copy that already has messages — those carry citations the server can't. */
+  async function loadServerMessages(id: string, orgId?: string) {
+    if (!serverThreadIds.current.has(id) || !isAuthenticated()) return;
+    try {
+      const detail = await getChatThread(id, orgId);
+      const stored = detail.messages
+        .map(serverMessageToStored)
+        .filter((item): item is StoredChatMessage => item !== null);
+      if (!stored.length) return;
+      setSessions((current) => {
+        const target = current.find((item) => item.id === id);
+        if (!target || target.messages.length > 0) return current;
+        const next = current.map((item) => (item.id === id ? { ...item, messages: stored } : item));
+        saveChatSessions(window.localStorage, next);
+        return next;
+      });
+      if (sessionKey.current === id) setMessages((prev) => (prev.length ? prev : stored));
+    } catch { /* leave the thread empty — the composer still works */ }
+  }
+
+  function openSession(item: StoredChatSession) {
+    setCreatingNew(false);
+    setActiveSessionId(item.id);
+    sessionKey.current = item.id;
+    setMessages(item.messages);
+    setCategory(isCategory(item.category) ? item.category : "General");
+    setModelSelection(normalizeChatModelSelection(models, {
+      model: item.model,
+      reasoningEffort: item.reasoningEffort,
+    }));
+    setDraft("");
+    setError("");
+    if (item.messages.length === 0) void loadServerMessages(item.id, item.scope.orgId || undefined);
+  }
+
+  function removeSession(id: string) {
+    const updated = sessions.filter((item) => item.id !== id);
+    setSessions(updated);
+    saveChatSessions(window.localStorage, updated);
+    if (serverThreadIds.current.has(id) && isAuthenticated()) {
+      void deleteChatThread(id, scopeState.scope.orgId || undefined).catch(() => { /* stays deleted locally */ });
+    }
+    serverThreadIds.current.delete(id);
+    if (activeSessionId === id) newConversation();
   }
 
   function selectCategory(next: ChatCategory) {
     setCategory(next);
+    if (activeSessionId && messages.length) persist(activeSessionId, messages, next);
+  }
+
+  const activeModel = models.find((model) => model.id === modelSelection.model && model.enabled) ?? null;
+  const effortOptions = activeModel?.reasoning?.mode === "selectable" ? activeModel.reasoning.allowed : [];
+  const activeOrg = scopeState.orgs.find((org) => org.orgId === scopeState.scope.orgId);
+  const canManageModels = Boolean(activeOrg?.capabilities.includes("models:manage"));
+  const modelsEmpty = !modelsLoading && !modelsError && models.length === 0;
+
+  function selectModel(model: string) {
+    const next = normalizeChatModelSelection(models, { model });
+    setModelSelection(next);
+    if (activeSessionId && messages.length) persist(activeSessionId, messages, category, scopeState.scope, next);
+  }
+
+  function selectEffort(reasoningEffort: ChatModelSelection["reasoningEffort"]) {
+    const next = normalizeChatModelSelection(models, { model: modelSelection.model, reasoningEffort });
+    setModelSelection(next);
+    if (activeSessionId && messages.length) persist(activeSessionId, messages, category, scopeState.scope, next);
   }
 
   function moveCategory(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -131,97 +422,143 @@ function ChatContent() {
     requestAnimationFrame(() => document.getElementById(`chat-category-${next.toLowerCase()}`)?.focus());
   }
 
-  function chooseSuggestion(prompt: string) {
-    setDraft(prompt);
-    requestAnimationFrame(() => composer.current?.focus());
-  }
-
   return (
-    <div className={`chat-page${messages.length ? " chat-page--active" : ""}`}>
-      <div className="chat-hero">
-        <header className="chat-heading">
-          <div>
-            <span className="chat-eyebrow">Agent workbench · {category}</span>
-            <h1>{messages.length ? "Continue the task" : "What should we move forward?"}</h1>
-          </div>
-          {messages.length > 0 && <button type="button" className="chat-new-button" onClick={newConversation}>New conversation</button>}
-        </header>
-
-        {messages.length > 0 && (
-          <section className="chat-thread" aria-live="polite" aria-label="Conversation">
-            {messages.map((item) => (
-              <article className={`chat-message chat-message--${item.role}`} key={item.id}>
-                <div className="chat-message__role">{item.role === "user" ? "You" : "Agent"}</div>
-                <div className="chat-message__body markdown-content markdown-content--chat"><Markdown>{item.content}</Markdown></div>
-                {item.citations && item.citations.length > 0 && (
-                  <div className="chat-citations">
-                    <span>Context used</span>
-                    {item.citations.map((citation, index) => (
-                      <div className="chat-citation" key={`${citation.recordId}-${index}`}>
-                        <strong>{citation.title || citation.type?.replace(/_/g, " ") || `Memory ${index + 1}`}</strong>
-                        <p>{citation.excerpt}</p>
-                        {typeof citation.score === "number" && <small>{Math.round(citation.score * 100)}% match</small>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {item.recallStrategy && <div className="chat-message__meta">Recall: {item.recallStrategy}</div>}
-              </article>
-            ))}
-            {sending && <div className="chat-thinking"><span /><span /><span /> Recalling context and working on the answer</div>}
-            <div ref={threadEnd} />
-          </section>
-        )}
-
-        <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-          <textarea
-            ref={composer}
-            aria-label="Message BrainRouter"
-            placeholder="Ask about your work, recall context, or start an agent task…"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-          />
-          <div className="chat-composer__footer">
-            <Link href={addSourceHref} className="chat-round-button" aria-label="Add a source" title="Add a source">+</Link>
-            <button type="button" className={`chat-context-button${showScope ? " active" : ""}`} aria-expanded={showScope} onClick={() => setShowScope((current) => !current)}>Context scope</button>
-            <span className="chat-scope-summary">{scopeState.projects.find((project) => project.projectId === scopeState.scope.projectId)?.name ?? scopeState.orgs.find((org) => org.orgId === scopeState.scope.orgId)?.name ?? "Personal"}</span>
-            <button type="submit" className="chat-round-button chat-send-button" aria-label="Send message" disabled={!draft.trim() || sending}>↑</button>
-          </div>
-          {showScope && <KnowledgeScopePicker state={scopeState} compact />}
-        </form>
-
-        {error && <div className="chat-error" role="alert"><span>Message not sent.</span> {error}</div>}
-        {!messages.length && (
-          <>
-            <div className="chat-categories" role="tablist" aria-label="Conversation category">
-              {categories.map((item, index) => (
-                <button
-                  type="button"
-                  role="tab"
-                  id={`chat-category-${item.toLowerCase()}`}
-                  aria-controls="chat-suggestions"
-                  aria-selected={category === item}
-                  tabIndex={category === item ? 0 : -1}
-                  className={category === item ? "active" : ""}
-                  onKeyDown={(event) => moveCategory(event, index)}
-                  onClick={() => selectCategory(item)}
-                  key={item}
-                >
-                  {item}
-                </button>
+    <div className="chat-workbench">
+      <aside className="chat-session-rail" aria-label="Chat sessions">
+        <div className="chat-session-rail__head">
+          <div><strong>Sessions</strong><span>Synced to your account</span></div>
+          <button type="button" onClick={newConversation} aria-label="New task" title="New task">+</button>
+        </div>
+        <div className="chat-session-list">
+          {!hydrated || scopeState.loading || (threadsLoading && scopedSessions.length === 0) ? <InlineLoading label="Loading sessions…" />
+            : scopedSessions.length === 0 ? <span className="chat-session-empty">No tasks in this scope yet.</span>
+              : scopedSessions.map((item) => (
+                <div className={`chat-session-item${activeSessionId === item.id ? " active" : ""}`} key={item.id}>
+                  <button type="button" onClick={() => openSession(item)} aria-current={activeSessionId === item.id ? "page" : undefined}>
+                    <strong>{item.title}</strong>
+                    <span>{item.category} · {new Date(item.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                  </button>
+                  <button type="button" className="chat-session-remove" aria-label={`Remove ${item.title}`} title="Remove session" onClick={() => removeSession(item.id)}>×</button>
+                </div>
               ))}
+        </div>
+      </aside>
+
+      <div className={`chat-page${messages.length ? " chat-page--active" : ""}`}>
+        <div className="chat-hero">
+          <header className="chat-heading">
+            <div>
+              <span className="chat-eyebrow">Agent workbench · {category}</span>
+              <h1>{messages.length ? sessionTitle(messages) : "What should we move forward?"}</h1>
             </div>
-            <div id="chat-suggestions" className="chat-suggestions" role="tabpanel" aria-labelledby={`chat-category-${category.toLowerCase()}`}>
-              {suggestions[category].map(([title, description]) => <button type="button" key={title} onClick={() => chooseSuggestion(description)}><strong>{title}</strong><span>{description}</span></button>)}
+            {messages.length > 0 && <button type="button" className="chat-new-button" onClick={newConversation}>New task</button>}
+          </header>
+
+          {messages.length > 0 && (
+            <section className="chat-thread" aria-live="polite" aria-label="Conversation">
+              {messages.map((item) => (
+                <article className={`chat-message chat-message--${item.role}`} key={item.id}>
+                  <div className="chat-message__role">{item.role === "user" ? "You" : "Agent"}</div>
+                  <div className="chat-message__body markdown-content markdown-content--chat"><LazyMarkdown>{item.content}</LazyMarkdown></div>
+                  {item.citations && item.citations.length > 0 && (
+                    <div className="chat-citations">
+                      <span>Context used</span>
+                      {item.citations.map((citation, index) => (
+                        <div className="chat-citation" key={`${citation.recordId}-${index}`}>
+                          <strong>{citation.title || citation.type?.replace(/_/g, " ") || `Memory ${index + 1}`}</strong>
+                          <p>{citation.excerpt}</p>
+                          {typeof citation.score === "number" && <small>{Math.round(citation.score * 100)}% match</small>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {item.recallStrategy && <div className="chat-message__meta">Recall: {item.recallStrategy}</div>}
+                </article>
+              ))}
+              {sending && <div className="chat-thinking"><span /><span /><span /> Recalling context and working on the answer</div>}
+              <div ref={threadEnd} />
+            </section>
+          )}
+
+          <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+            <textarea
+              ref={composer}
+              aria-label="Message BrainRouter"
+              placeholder="Ask about your work, recall context, or start an agent task…"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <div className="chat-composer__footer">
+              <Link href={addSourceHref} className="chat-round-button" aria-label="Add a source" title="Add a source">+</Link>
+              <button type="button" className={`chat-context-button${showScope ? " active" : ""}`} aria-expanded={showScope} onClick={() => setShowScope((current) => !current)}>Context</button>
+              <span className="chat-scope-summary">{scopeState.projects.find((project) => project.projectId === scopeState.scope.projectId)?.name ?? scopeState.orgs.find((org) => org.orgId === scopeState.scope.orgId)?.name ?? "Personal"}</span>
+              <span className="chat-composer__spacer" />
+              <label className="chat-runtime-select">
+                <span className="sr-only">Model</span>
+                <select aria-label="Model" value={modelSelection.model} disabled={modelsLoading || models.length === 0} onChange={(event) => selectModel(event.target.value)}>
+                  {modelsLoading ? <option value="">Loading models…</option>
+                    : models.length === 0 ? <option value="">No managed models</option>
+                      : models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                </select>
+              </label>
+              <label className="chat-runtime-select chat-runtime-select--effort">
+                <span className="sr-only">Reasoning effort</span>
+                <select
+                  aria-label="Reasoning effort"
+                  value={modelSelection.reasoningEffort}
+                  disabled={!activeModel || activeModel.reasoning?.mode !== "selectable" || effortOptions.length === 0}
+                  onChange={(event) => selectEffort(event.target.value as ChatModelSelection["reasoningEffort"])}
+                >
+                  <option value="">{activeModel?.reasoning?.mode === "adaptive" ? "Adaptive" : "Automatic"}</option>
+                  {effortOptions.map((effort) => <option key={effort.id} value={effort.id}>{effort.label}</option>)}
+                </select>
+              </label>
+              <button type="submit" className="chat-round-button chat-send-button" aria-label="Send message" disabled={!draft.trim() || sending || modelsLoading || !activeModel}>↑</button>
             </div>
-          </>
-        )}
+            {showScope && <KnowledgeScopePicker state={scopeState} compact />}
+          </form>
+
+          {modelsError && <div className="chat-model-error" role="status">Managed models unavailable. <Link href="/providers">Open Models &amp; providers</Link></div>}
+          {modelsEmpty && (
+            <div className="chat-model-error" role="status">
+              No managed model is available for {activeOrg?.name ?? "this organization"}. {canManageModels
+                ? <Link href="/providers">Configure a model</Link>
+                : <>Choose another organization under Context, or ask an organization administrator to configure one.</>}
+            </div>
+          )}
+          {error && <div className="chat-error" role="alert"><span>Message not sent.</span> {error}</div>}
+          {!messages.length && (
+            <>
+              <div className="chat-categories" role="tablist" aria-label="Conversation category">
+                {categories.map((item, index) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`chat-category-${item.toLowerCase()}`}
+                    aria-controls="chat-suggestions"
+                    aria-selected={category === item}
+                    tabIndex={category === item ? 0 : -1}
+                    className={category === item ? "active" : ""}
+                    onKeyDown={(event) => moveCategory(event, index)}
+                    onClick={() => selectCategory(item)}
+                    key={item}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <div id="chat-suggestions" className="chat-suggestions" role="tabpanel" aria-labelledby={`chat-category-${category.toLowerCase()}`}>
+                {suggestions[category].map(([title, description]) => <button type="button" key={title} onClick={() => { setDraft(description); requestAnimationFrame(() => composer.current?.focus()); }}><strong>{title}</strong><span>{description}</span></button>)}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { RecallResult } from "@kinqs/brainrouter-types";
-import type { ResolvedProviderConfig } from "../../../providers/types.js";
-import type { GatewayDispatchOptions } from "../../../services/modelGateway/modelGateway.js";
+import type { ModelReasoningEffort } from "@kinqs/brainrouter-types";
+import type { ScopedGatewayDispatchOptions } from "../../../services/modelGateway/modelGateway.js";
 
 export interface BrainChatMessage {
   role: "user" | "assistant";
@@ -11,11 +11,21 @@ export interface BrainChatMessage {
 export interface BrainChatInput {
   userId: string;
   orgId: string;
+  /**
+   * The org the MODEL dispatch runs as — the org that owns the resolved managed
+   * model + service principal. Equals `orgId` normally, but differs when a
+   * BYOK-less org inherits the deployment-default (system-org) model: recall and
+   * capture stay on the caller's `orgId`, while the gateway call must present the
+   * model owner's org so its service principal is accepted. Defaults to `orgId`.
+   */
+  dispatchOrgId?: string;
   sessionKey: string;
   projectId?: string;
   projectTag?: string;
   workspaceTag?: string;
-  provider: ResolvedProviderConfig;
+  model: string;
+  reasoningEffort?: ModelReasoningEffort;
+  servicePrincipalId: string;
   messages: BrainChatMessage[];
 }
 
@@ -45,7 +55,7 @@ interface BrainChatDependencies {
       scope: "project" | "workspace";
     };
   }): Promise<RecallResult>;
-  dispatch(input: GatewayDispatchOptions): Promise<string>;
+  dispatch(input: ScopedGatewayDispatchOptions): Promise<string>;
   capture?(input: {
     userId: string;
     sessionKey: string;
@@ -121,10 +131,10 @@ export async function runBrainChat(input: BrainChatInput, deps: BrainChatDepende
   });
 
   const answer = (await deps.dispatch({
-    endpoint: input.provider.endpoint,
-    apiKey: input.provider.apiKey,
-    model: input.provider.model,
-    wireFormat: input.provider.wireFormat,
+    orgId: input.dispatchOrgId ?? input.orgId,
+    servicePrincipalId: input.servicePrincipalId,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
     messages: [
       { role: "system", content: systemPrompt(recall) },
       ...input.messages.map((message) => ({ role: message.role, content: message.content })),

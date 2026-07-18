@@ -1,6 +1,6 @@
 // brainrouter-desktop/src/panels/design/PreviewCanvas.tsx
 import React, { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
-import { startPick as wvStartPick, readPick, cancelPick, type WebviewEl } from '../../lib/uitest/webviewBridge.js';
+import { startPick as wvStartPick, readPick, cancelPick, type WebviewEl } from '../../lib/browser/webviewBridge.js';
 import type { DraftOperation } from '../../lib/design/designElements.js';
 import { buildApplyPayload, buildApplyScript } from '../../lib/design/designProperties.js';
 import { buildMeasureScript, MEASURED_CSS_PROPERTIES, parseMeasurement, type MeasuredElement } from '../../lib/design/designMeasure.js';

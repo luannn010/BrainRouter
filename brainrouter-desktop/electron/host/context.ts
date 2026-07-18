@@ -28,13 +28,16 @@ import type { AnnotationRecord } from '@kinqs/brainrouter-types';
 import type { ArtifactRecord } from '@kinqs/brainrouter-types';
 import type { GithubConnectorClient, GithubConnectorPermissionClient, GithubConnectorValidationClient, McpConnectorClient } from '@kinqs/brainrouter-core/connectors';
 import type { ComputerUseBridge, SecretBridge } from './helpers.js';
-import type { UiTestHost } from '../uitestHost.js';
 import type { DesignHost } from '../designHost.js';
 import type { PtyRegistry } from './pty.js';
 import type { HostedAgentManager } from './hostedAgents.js';
 import type { FanoutManager } from './fanoutManager.js';
 import type { RemoteWorktreeManager } from './sshRemote.js';
 import type { MobileRelayServer } from './mobileRelayServer.js';
+import type { RemoteAccessClient } from '../remoteAccessClient.js';
+import type { BrowserHost } from '../browserHost.js';
+import type { DevServerRegistry } from '../devServerRegistry.js';
+import type { DesktopAccountModelCatalog } from '../accountIntegration.js';
 
 type WsGit = ReturnType<typeof resolveWorkspaceGit>;
 
@@ -56,8 +59,10 @@ export type GhResult = { ok: boolean; stdout: string; stderr: string; error?: st
  */
 export interface HostContext {
   // ── Core runtime ──────────────────────────────────────────────────────────
-  // UI-TEST fusion — the web UI-testing host the query router drives.
-  uitest: UiTestHost;
+  // BROWSER — the web browser-automation host the query router drives.
+  browser: BrowserHost;
+  // Dev-server registry — start/stop/add launch.json dev servers (Servers panel).
+  devServers: DevServerRegistry;
   // DESIGN STUDIO — lists/reads/seeds prototypes for the preview + test canvases.
   design: DesignHost;
   workspaceRoot: string;
@@ -87,7 +92,9 @@ export interface HostContext {
   getActiveAgent: () => Agent;
   loadGlobalLlm: () => LLMConfig;
   llmForSession: (sessionKey: string) => LLMConfig;
-  resolveProviderLlm: (providerName: string, model: string) => LLMConfig | undefined;
+  resolveProviderLlm: (providerName: string, model: string) => Promise<LLMConfig | undefined> | LLMConfig | undefined;
+  refreshAccountModelCatalog: (force?: boolean) => Promise<DesktopAccountModelCatalog>;
+  peekAccountModelCatalog: () => DesktopAccountModelCatalog;
   syncActiveSessionLlm: (base?: LLMConfig) => LLMConfig;
   spawnAgent: (sessionKey: string) => AgentLike;
   spawnReviewer: (sessionKey?: string) => AgentLike;
@@ -116,6 +123,7 @@ export interface HostContext {
   fanoutManager: FanoutManager;
   remoteWorktrees: RemoteWorktreeManager;
   mobileRelay: MobileRelayServer;
+  remoteAccess: RemoteAccessClient;
   modelsCacheByKey: Map<string, { models: string[]; at: number }>;
   getPrCache: () => { at: number; pr: { number: number; state: string; title?: string } | null } | null;
   setPrCache: (v: { at: number; pr: { number: number; state: string; title?: string } | null } | null) => void;

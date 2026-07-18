@@ -4,6 +4,7 @@ import type {
   BrainChatCitation,
   BrainChatRequest,
   BrainChatResponse,
+  ModelReasoningEffort,
   SourceChunk,
   SourceDocument,
 } from '@kinqs/brainrouter-types';
@@ -35,15 +36,26 @@ function queryString(values: Record<string, string | number | undefined>): strin
 }
 
 export const brainApi = {
-  chat: (messages: BrainChatMessage[], sessionKey: string, scope: KnowledgeScope) =>
+  chat: (
+    messages: BrainChatMessage[],
+    sessionKey: string,
+    scope: KnowledgeScope,
+    selection?: { model?: string; reasoningEffort?: ModelReasoningEffort | '' },
+  ) =>
     authFetch<BrainChatResponse>('/api/brain/chat', {
       method: 'POST',
       orgId: scope.orgId || undefined,
+      // An agent turn (recall + an LLM call, up to Max reasoning effort) runs far
+      // longer than the 10s default dashboard timeout — allow past the backend's
+      // 120s dispatch bound so the client doesn't abort a still-working request.
+      signal: AbortSignal.timeout(180_000),
       body: {
         messages,
         sessionKey,
         ...(scope.projectId ? { projectId: scope.projectId } : {}),
         ...(scope.workspaceTag ? { workspaceTag: scope.workspaceTag } : {}),
+        ...(selection?.model ? { model: selection.model } : {}),
+        ...(selection?.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
       },
     }),
   listSources: (scope: KnowledgeScope, limit = 100, signal?: AbortSignal) =>

@@ -1,11 +1,21 @@
+import {
+  MODEL_REASONING_EFFORTS,
+  type ModelCapabilities,
+  type ModelCapabilityProvenanceSource,
+  type ModelPolicy,
+  type ModelReasoningEffort,
+  type ModelReasoningPolicy,
+} from '@kinqs/brainrouter-types';
+
 type AccountConfig = {
-  cli?: { account?: { url?: string; displayName?: string; email?: string } };
-  servers?: Record<string, { identity?: string; apiKey?: string }>;
+  cli?: { account?: { url?: string; userId?: string; displayName?: string; email?: string } };
+  servers?: Record<string, { identity?: string; apiKey?: string; url?: string }>;
 };
 
 type FetchResponse = {
   ok: boolean;
   status: number;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 };
 
@@ -22,6 +32,22 @@ export type AccountTrackFetch = (
 /** @deprecated Use AccountTrackFetch for provider-neutral connector traffic. */
 export type GithubTrackFetch = AccountTrackFetch;
 
+/**
+ * PERF — the default account fetch, with a bounded timeout so an unreachable or
+ * slow account server can't hang desktop boot for the OS socket timeout (tens of
+ * seconds). Injected test/production fetches that already carry a signal are
+ * unaffected (they pass their own fetchImpl).
+ */
+const ACCOUNT_FETCH_TIMEOUT_MS = 4000;
+export const timeoutFetch: AccountFetch = ((
+  url: string,
+  init?: { method?: string; headers?: Record<string, string>; body?: string },
+): Promise<FetchResponse> =>
+  (globalThis.fetch as unknown as (u: string, i?: unknown) => Promise<FetchResponse>)(url, {
+    ...(init ?? {}),
+    signal: AbortSignal.timeout(ACCOUNT_FETCH_TIMEOUT_MS),
+  })) as AccountFetch;
+
 export interface BrainRouterAccountApi {
   baseUrl: string;
   apiKey: string;
@@ -36,6 +62,32 @@ export interface DesktopAccountIdentity {
   signedIn: boolean;
   username: string;
   email?: string;
+}
+
+/** Credential-free state Electron can expose synchronously before the utility
+ * host boots. It is intentionally limited to durable display identity. */
+export interface DesktopBootstrapState {
+  accountStatus: {
+    signedIn: boolean;
+    account: {
+      url: string;
+      userId: string;
+      displayName: string;
+      email: string;
+    } | null;
+  };
+}
+
+/** Renderer-safe snapshot for the built-in, read-only BrainRouter provider. */
+export interface DesktopAccountModelCatalog {
+  signedIn: boolean;
+  provider: { id: 'brainrouter'; label: 'BrainRouter'; readOnly: true };
+  revision: string | null;
+  etag: string | null;
+  models: ModelPolicy[];
+  stale: boolean;
+  refreshedAt: string | null;
+  error?: string;
 }
 
 export interface GithubAccountStatus {
@@ -102,9 +154,176 @@ function responseError(response: FetchResponse, body: Record<string, unknown>): 
   return message || `HTTP ${response.status}`;
 }
 
+const MODEL_EFFORTS = new Set<string>(MODEL_REASONING_EFFORTS);
+const CAPABILITY_SOURCES = new Set<ModelCapabilityProvenanceSource>(['verified', 'discovered', 'manual', 'inferred']);
+
+function nonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`Model catalog ${field} is required.`);
+  return value.trim();
+}
+
+function capabilitySource(value: unknown, field: string): ModelCapabilityProvenanceSource {
+  if (typeof value !== 'string' || !CAPABILITY_SOURCES.has(value as ModelCapabilityProvenanceSource)) {
+    throw new Error(`Model catalog ${field} is invalid.`);
+  }
+  return value as ModelCapabilityProvenanceSource;
+}
+
+function parseCapabilities(value: unknown): ModelCapabilities {
+  const raw = asRecord(value);
+  for (const field of ['streaming', 'tools', 'responses', 'reasoning'] as const) {
+    if (typeof raw[field] !== 'boolean') throw new Error(`Model catalog capability "${field}" must be boolean.`);
+  }
+  return {
+    streaming: raw.streaming as boolean,
+    tools: raw.tools as boolean,
+    responses: raw.responses as boolean,
+    reasoning: raw.reasoning as boolean,
+  };
+}
+
+function parseReasoning(value: unknown): ModelReasoningPolicy | null {
+  if (value === null) return null;
+  const raw = asRecord(value);
+  if (!Array.isArray(raw.allowed)) throw new Error('Model catalog reasoning.allowed must be an array.');
+  const allowed = raw.allowed.map((entry) => {
+    const item = asRecord(entry);
+    const id = nonEmptyString(item.id, 'reasoning effort') as ModelReasoningEffort;
+    if (!MODEL_EFFORTS.has(id)) throw new Error(`Model catalog contains unsupported effort "${id}".`);
+    return { id, label: nonEmptyString(item.label, `reasoning label for ${id}`) };
+  });
+  if (new Set(allowed.map((entry) => entry.id)).size !== allowed.length) {
+    throw new Error('Model catalog contains duplicate reasoning efforts.');
+  }
+  const defaultEffort = raw.default === null ? null : nonEmptyString(raw.default, 'reasoning default') as ModelReasoningEffort;
+  if (defaultEffort !== null && !allowed.some((entry) => entry.id === defaultEffort)) {
+    throw new Error('Model catalog reasoning default is not allowed.');
+  }
+  if (raw.mode !== 'selectable' && raw.mode !== 'adaptive') throw new Error('Model catalog reasoning mode is invalid.');
+  if (raw.manualBudgetTokens !== undefined && raw.manualBudgetTokens !== 'supported' && raw.manualBudgetTokens !== 'unsupported') {
+    throw new Error('Model catalog manual budget support is invalid.');
+  }
+  return {
+    default: defaultEffort,
+    allowed,
+    source: capabilitySource(raw.source, 'reasoning source'),
+    mode: raw.mode,
+    ...(raw.manualBudgetTokens ? { manualBudgetTokens: raw.manualBudgetTokens } : {}),
+  };
+}
+
+function parseModelPolicy(value: unknown): ModelPolicy {
+  const raw = asRecord(value);
+  if (raw.provider !== 'brainrouter') throw new Error('Model catalog provider must be BrainRouter.');
+  if (raw.enabled !== true) throw new Error('Model catalog returned a disabled model.');
+  const provenance = asRecord(raw.provenance);
+  const sourceUrl = typeof provenance.sourceUrl === 'string' && provenance.sourceUrl.trim() ? provenance.sourceUrl.trim() : undefined;
+  const verifiedAt = typeof provenance.verifiedAt === 'string' && provenance.verifiedAt.trim() ? provenance.verifiedAt.trim() : undefined;
+  return {
+    id: nonEmptyString(raw.id, 'model id'),
+    label: nonEmptyString(raw.label, 'model label'),
+    provider: 'brainrouter',
+    enabled: true,
+    capabilities: parseCapabilities(raw.capabilities),
+    reasoning: parseReasoning(raw.reasoning),
+    provenance: {
+      source: capabilitySource(provenance.source, 'provenance source'),
+      ...(sourceUrl ? { sourceUrl } : {}),
+      ...(verifiedAt ? { verifiedAt } : {}),
+    },
+    revision: nonEmptyString(raw.revision, 'model revision'),
+  };
+}
+
+export function emptyAccountModelCatalog(signedIn: boolean, error?: string): DesktopAccountModelCatalog {
+  return {
+    signedIn,
+    provider: { id: 'brainrouter', label: 'BrainRouter', readOnly: true },
+    revision: null,
+    etag: null,
+    models: [],
+    stale: false,
+    refreshedAt: null,
+    ...(error ? { error } : {}),
+  };
+}
+
+/** Fetch and strictly whitelist the member-safe model catalog. Account bearer
+ * and gateway endpoint never enter the returned object. `previous` enables
+ * normal ETag revalidation plus an explicit stale offline view. */
+export async function fetchAccountModelCatalog(
+  account: BrainRouterAccountContext | null,
+  previous: DesktopAccountModelCatalog | null,
+  fetchImpl: AccountFetch = timeoutFetch,
+): Promise<DesktopAccountModelCatalog> {
+  if (!account) return emptyAccountModelCatalog(false);
+  const headers = brainRouterAccountHeaders(account);
+  if (previous?.etag) headers['If-None-Match'] = previous.etag;
+  try {
+    const response = await fetchImpl(`${account.baseUrl}/api/models/catalog`, { headers });
+    if (response.status === 304 && previous) {
+      return { ...previous, stale: false, refreshedAt: new Date().toISOString(), error: undefined };
+    }
+    const body = await safeJson(response);
+    if (!response.ok) throw new Error(responseError(response, body));
+    const revision = nonEmptyString(body.revision, 'revision');
+    if (!Array.isArray(body.models)) throw new Error('Model catalog models must be an array.');
+    const models = body.models.map(parseModelPolicy);
+    return {
+      signedIn: true,
+      provider: { id: 'brainrouter', label: 'BrainRouter', readOnly: true },
+      revision,
+      etag: response.headers?.get('etag') ?? `"${revision}"`,
+      models,
+      stale: false,
+      refreshedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to refresh the BrainRouter model catalog.';
+    return previous
+      ? { ...previous, signedIn: true, stale: true, error: message }
+      : emptyAccountModelCatalog(true, message);
+  }
+}
+
+function normalizeAccountBaseUrl(value: unknown, fromMcpProfile = false): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.hash = '';
+    url.search = '';
+    // A BrainRouter MCP profile normally points at `<account>/mcp`. Keep any
+    // deployment path prefix, but remove the MCP endpoint before calling the
+    // account REST API. Explicit cli.account URLs are already API bases and
+    // retain their path unchanged.
+    const pathname = url.pathname.replace(/\/+$/, '');
+    url.pathname = fromMcpProfile && /\/mcp$/i.test(pathname)
+      ? pathname.slice(0, -4) || '/'
+      : (fromMcpProfile ? '/' : pathname || '/');
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/** Resolve the account API base from either modern account metadata or an
+ * existing BrainRouter MCP profile. The latter keeps older CLI/desktop logins
+ * fully usable instead of reporting "signed out" while their server key works. */
+export function resolveBrainRouterAccountBaseUrl(config: unknown): string {
+  const candidate = asRecord(config) as AccountConfig;
+  const serverId = Object.keys(candidate.servers ?? {}).find((id) => {
+    const server = candidate.servers?.[id];
+    return server?.identity === 'brainrouter' || /^brainrouter/i.test(id);
+  });
+  return normalizeAccountBaseUrl(candidate.cli?.account?.url)
+    || normalizeAccountBaseUrl(serverId ? candidate.servers?.[serverId]?.url : '', true);
+}
+
 export function resolveBrainRouterAccountApi(config: unknown): BrainRouterAccountApi | null {
   const candidate = asRecord(config) as AccountConfig;
-  const baseUrl = String(candidate.cli?.account?.url ?? '').trim().replace(/\/+$/, '');
+  const baseUrl = resolveBrainRouterAccountBaseUrl(candidate);
   const serverId = Object.keys(candidate.servers ?? {}).find((id) => {
     const server = candidate.servers?.[id];
     return server?.identity === 'brainrouter' || /^brainrouter/i.test(id);
@@ -123,9 +342,30 @@ export function resolveDesktopAccountIdentity(config: unknown, fallbackUsername:
   const email = String(account?.email ?? '').trim();
   const fallback = String(fallbackUsername ?? '').trim() || 'BrainRouter user';
   return {
-    signedIn: account !== undefined,
+    signedIn: account !== undefined || resolveBrainRouterAccountApi(candidate) !== null,
     username: displayName || email || fallback,
     ...(email ? { email } : {}),
+  };
+}
+
+/** Build the renderer's launch snapshot from local config only. No network or
+ * safe-storage read is required, and no bearer/API key crosses the bridge. */
+export function resolveDesktopBootstrapState(config: unknown, fallbackUsername: string): DesktopBootstrapState {
+  const candidate = asRecord(config) as AccountConfig;
+  const identity = resolveDesktopAccountIdentity(candidate, fallbackUsername);
+  if (!identity.signedIn) return { accountStatus: { signedIn: false, account: null } };
+  const stored = candidate.cli?.account;
+  const connected = resolveBrainRouterAccountApi(candidate);
+  return {
+    accountStatus: {
+      signedIn: true,
+      account: {
+        url: normalizeAccountBaseUrl(stored?.url) || connected?.baseUrl || '',
+        userId: String(stored?.userId ?? '').trim(),
+        displayName: String(stored?.displayName ?? '').trim() || identity.username,
+        email: String(stored?.email ?? '').trim(),
+      },
+    },
   };
 }
 
@@ -134,7 +374,7 @@ export function resolveDesktopAccountIdentity(config: unknown, fallbackUsername:
  * this context explicitly instead of relying on a server-side fallback. */
 export async function resolveBrainRouterAccountContext(
   config: unknown,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): Promise<BrainRouterAccountContext | null> {
   const account = resolveBrainRouterAccountApi(config);
   if (!account) return null;
@@ -160,7 +400,7 @@ export function brainRouterAccountHeaders(
 ): Record<string, string> {
   return {
     Authorization: `Bearer ${account.apiKey}`,
-    'X-BrainRouter-Org': account.orgId,
+    ...(account.orgId ? { 'X-BrainRouter-Org': account.orgId } : {}),
     ...(json ? { 'Content-Type': 'application/json' } : {}),
   };
 }
@@ -168,10 +408,15 @@ export function brainRouterAccountHeaders(
 export async function startAccountConnectorOAuth(
   account: BrainRouterAccountContext,
   source: string,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
+  connectorId?: string,
 ): Promise<{ ok: boolean; url?: string; error?: string }> {
+  // `connectorId` (multi-account) re-connects a specific existing account rather
+  // than minting a new one; the backend reads it as a query param and verifies
+  // ownership before binding it into the signed state.
+  const query = connectorId ? `?connectorId=${encodeURIComponent(connectorId)}` : '';
   const response = await fetchImpl(
-    `${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/oauth/start`,
+    `${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/oauth/start${query}`,
     { method: 'POST', headers: brainRouterAccountHeaders(account, true) },
   );
   const body = await safeJson(response);
@@ -180,64 +425,68 @@ export async function startAccountConnectorOAuth(
   return { ok: true, url };
 }
 
-const SECRETISH_CONFIG_KEY = /(token|secret|password|passphrase|apikey|api[_-]?key|credential|refresh|client[_-]?secret|private[_-]?key)/i;
-
 /** A bounded, metadata-only view of account-managed OAuth connectors for the
  * desktop Configured list. The server remains the credential source of truth;
  * this function copies only an allowlist of status fields into the renderer. */
 export async function fetchAccountConnectorStatuses(
   config: unknown,
   sources: readonly string[],
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): Promise<AccountConnectorSnapshotResult> {
   if (!resolveBrainRouterAccountApi(config)) return { signedIn: false, connectors: [] };
   try {
     const account = await resolveBrainRouterAccountContext(config, fetchImpl);
     if (!account) return { signedIn: false, connectors: [] };
     const boundedSources = [...new Set(sources.map((source) => source.trim()).filter(Boolean))].slice(0, 12);
-    const connectors = await Promise.all(boundedSources.map(async (source): Promise<AccountConnectorSnapshot> => {
+    // Multi-account: enumerate EVERY account per source (work + personal + …) via
+    // the /accounts route, not the single /status connector — otherwise the
+    // Configured list shows just one card for an N-account source and a connected
+    // second account can render as disconnected.
+    const perSource = await Promise.all(boundedSources.map(async (source): Promise<AccountConnectorSnapshot[]> => {
       try {
         const response = await fetchImpl(
-          `${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/status`,
+          `${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/accounts`,
           { headers: brainRouterAccountHeaders(account) },
         );
         const body = await safeJson(response);
         if (!response.ok) {
-          return { source, connected: false, connector: null, error: responseError(response, body) };
+          return [{ source, connected: false, connector: null, error: responseError(response, body) }];
         }
-        const raw = asRecord(body.connector);
-        const id = typeof raw.id === 'string' ? raw.id.trim() : '';
-        const connector = id ? {
-          id,
-          name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : source,
-          status: typeof raw.status === 'string' ? raw.status : 'connected',
-          enabled: raw.enabled === true,
-          config: Object.fromEntries(
-            Object.entries(asRecord(raw.config)).filter(([key]) => !SECRETISH_CONFIG_KEY.test(key)),
-          ),
-          lastRunAt: typeof raw.lastRunAt === 'string' ? raw.lastRunAt : null,
-          lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
-        } : null;
-        return {
-          source,
-          connected: body.connected === true,
-          connector,
-          ...(typeof body.account === 'string' ? { account: body.account } : {}),
-        };
+        const list = Array.isArray(body.accounts) ? body.accounts : [];
+        return list.map((entry): AccountConnectorSnapshot => {
+          const raw = asRecord(entry);
+          const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+          const connected = raw.connected === true;
+          const connector = id ? {
+            id,
+            name: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : source,
+            status: typeof raw.status === 'string' ? raw.status : (connected ? 'connected' : 'disconnected'),
+            enabled: raw.enabled === true,
+            config: {} as Record<string, unknown>,
+            lastRunAt: typeof raw.lastRunAt === 'string' ? raw.lastRunAt : null,
+            lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
+          } : null;
+          return {
+            source,
+            connected,
+            connector,
+            ...(typeof raw.account === 'string' ? { account: raw.account } : {}),
+          };
+        });
       } catch (error) {
-        return {
+        return [{
           source,
           connected: false,
           connector: null,
           error: error instanceof Error ? error.message : 'Unable to read connector status.',
-        };
+        }];
       }
     }));
     return {
       signedIn: true,
       orgId: account.orgId,
       ...(account.orgName ? { orgName: account.orgName } : {}),
-      connectors,
+      connectors: perSource.flat(),
     };
   } catch (error) {
     return {
@@ -251,7 +500,7 @@ export async function fetchAccountConnectorStatuses(
 function createAccountTrackProxyFetch(
   source: 'github' | 'gitlab',
   account: BrainRouterAccountContext,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): AccountTrackFetch {
   return async (url, init) => {
     const providerUrl = new URL(url);
@@ -292,21 +541,21 @@ function createAccountTrackProxyFetch(
 
 export function createGithubTrackProxyFetch(
   account: BrainRouterAccountContext,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): AccountTrackFetch {
   return createAccountTrackProxyFetch('github', account, fetchImpl);
 }
 
 export function createGitlabTrackProxyFetch(
   account: BrainRouterAccountContext,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): AccountTrackFetch {
   return createAccountTrackProxyFetch('gitlab', account, fetchImpl);
 }
 
 export async function fetchGithubAccountStatus(
   config: unknown,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): Promise<GithubAccountStatus> {
   const account = resolveBrainRouterAccountApi(config);
   if (!account) return { signedIn: false, connected: false };
@@ -349,7 +598,7 @@ export async function fetchGithubAccountStatus(
 
 export async function fetchAutomationAccountStatus(
   config: unknown,
-  fetchImpl: AccountFetch = globalThis.fetch as unknown as AccountFetch,
+  fetchImpl: AccountFetch = timeoutFetch,
 ): Promise<AutomationAccountStatus> {
   const account = resolveBrainRouterAccountApi(config);
   if (!account) {

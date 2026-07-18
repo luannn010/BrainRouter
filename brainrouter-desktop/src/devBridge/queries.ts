@@ -72,6 +72,14 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
     // Router-first: routing is always on (no `enabled` gate).
     return { enabled: true, primaryChain: Array.isArray(router.chain) ? router.chain : [], canonical, bare: [...bareMap.values()], aliases: [] };
   };
+  const devConnectorSnapshot = () => ({
+    catalog: devConnectorCatalog.map((entry) => ({ ...entry })),
+    items: S.devConnectors.map((entry) => ({ ...entry, config: { ...entry.config }, credential: { ...entry.credential }, flows: [...entry.flows] })),
+    documentCounts: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, Number((entry.checkpoint as { documentCount?: number } | undefined)?.documentCount ?? 0)])),
+    permissionCounts: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devConnectorPermissionCounts[entry.id] ?? 0])),
+    runPreviews: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devConnectorRuns[entry.id] ?? []])),
+    documentPreviews: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devSlimDocuments(entry.id, 3)])),
+  });
   const queries: Record<string, (args: Record<string, unknown>) => unknown> = {
     'list-sessions': () => mergeMeta(S.wsCurrent),
     // Design Studio — the browser preview has no file system, so serve the
@@ -122,6 +130,7 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
     },
     'schedule-remove': (a) => { const i = devSchedules.findIndex((s) => s.id === a.id); if (i >= 0) devSchedules.splice(i, 1); return { ok: i >= 0 }; },
     'schedule-toggle': (a) => { const s = devSchedules.find((x) => x.id === a.id); if (s) s.enabled = a.enabled !== false; return { ok: !!s, enabled: a.enabled !== false }; },
+    'connectors-snapshot': devConnectorSnapshot,
     // T13 — mock git worktrees (raw porcelain, parsed in the renderer).
     'git-worktrees': () => ({ raw: devWorktrees.map((w) => `worktree ${w.path}\nHEAD ${'a'.repeat(40)}\n${w.detached ? 'detached' : `branch refs/heads/${w.branch}`}\n`).join('\n'), gitRoot: '/Users/dev/BrainRouter', current: S.wsCurrent }),
     'worktree-diff': () => ({ path: '', diff: DEMO_DIFF, files: 1 }),
@@ -756,6 +765,7 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
     'action:github-disconnect': () => ({ ok: true }),
     'github-device-start': () => ({ ok: true, userCode: 'BR-D3MO', verificationUri: 'https://github.com/login/device', interval: 2 }),
     'github-device-poll': () => ({ status: 'connected', login: 'kinqsradio' }),
+    'github-device-cancel': () => ({ ok: true }),
     'automation-account-status': () => ({
       signedIn: true,
       githubOauthConnected: true,
@@ -1019,10 +1029,6 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
       connectors: {
         catalog: devConnectorCatalog.map((entry) => ({ ...entry })),
         items: S.devConnectors.map((entry) => ({ ...entry, config: { ...entry.config }, credential: { ...entry.credential }, flows: [...entry.flows] })),
-        documentCounts: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, Number((entry.checkpoint as { documentCount?: number } | undefined)?.documentCount ?? 0)])),
-        permissionCounts: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devConnectorPermissionCounts[entry.id] ?? 0])),
-        runPreviews: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devConnectorRuns[entry.id] ?? []])),
-        documentPreviews: Object.fromEntries(S.devConnectors.map((entry) => [entry.id, devSlimDocuments(entry.id, 3)])),
       },
       workspacePrefs: { ...prefs },
       sessionMode: { ...(sessionModes[S.activeSession] ?? {}) },
@@ -1503,14 +1509,25 @@ export function createQueries(S: DevState): Record<string, (args: Record<string,
     'action:plugin-enable': () => ({ ok: true }),
     'action:plugin-consent-set': () => ({ ok: true }),
     'action:plugin-remove': () => ({ ok: true }),
-    // UI-TEST fusion — a synthetic screen map + stories so the Atlas "Screens"
+    // BROWSER — a synthetic screen map + stories so the Atlas "Screens"
     // mode + Browser panel render in browser-only dev (real extraction + LLM
     // suggestion run in the host over the workspace).
-    'uitest:manifest': () => ({ manifest: devUiMap() }),
-    'uitest:extract': () => ({ manifest: devUiMap(), diff: { added: [], removed: [], changed: [] }, degraded: false, fileCount: 3 }),
-    'uitest:list-stories': () => ({ stories: devStories() }),
-    'uitest:suggest-stories': () => ({ stories: devStories(), count: devStories().length }),
-    'uitest:ensure-app': () => ({ url: 'http://localhost:5174', started: false }),
+    'browser:manifest': () => ({ manifest: devUiMap() }),
+    'browser:extract': () => ({ manifest: devUiMap(), diff: { added: [], removed: [], changed: [] }, degraded: false, fileCount: 3 }),
+    'browser:list-stories': () => ({ stories: devStories() }),
+    'browser:suggest-stories': () => ({ stories: devStories(), count: devStories().length }),
+    'browser:ensure-app': () => ({ url: 'http://localhost:5174', started: false }),
+    // SERVERS — the three launch.json configs returned as stopped so the Servers
+    // panel renders in the browser-only dev harness (the host runs them for real).
+    'servers:list': () => ({ servers: [
+      { name: 'dashboard', exe: 'npm', args: ['run', 'dev'], port: 4321, url: 'http://localhost:4321', status: 'stopped', pid: null, startedAt: null },
+      { name: 'desktop-renderer', exe: 'npm', args: ['run', 'dev:renderer'], port: 5199, url: 'http://localhost:5199', status: 'stopped', pid: null, startedAt: null },
+      { name: 'desktop-impl', exe: 'npm', args: ['run', 'dev:impl'], port: 5198, url: 'http://localhost:5198', status: 'stopped', pid: null, startedAt: null },
+    ] }),
+    'servers:start': (a) => ({ name: String(a.name ?? ''), exe: 'npm', args: [], port: 0, url: '', status: 'stopped', pid: null, startedAt: null }),
+    'servers:stop': () => ({ ok: true }),
+    'servers:add': () => ({ ok: true }),
+    'servers:logs': () => ({ lines: [] as string[] }),
   };
   return queries;
 }

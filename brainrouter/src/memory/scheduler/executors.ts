@@ -26,7 +26,9 @@ import { enqueueAgentJob } from "./jobs.js";
 import { runConnectorSync } from "../../connectors/syncExecutor.js";
 import { runPrSecurityReview, runPrCodeReview, runPrPentest, type PrReviewInput, type PrReviewDeps } from "../../integrations/prSecurityReview.js";
 import { runDomainPentest } from "../../integrations/domainPentest.js";
-import { loadVulnerabilityIntelligence } from "@kinqs/brainrouter-core/review";
+import { runVulnerabilitySync, type VulnerabilitySyncStore } from "../../services/vulnerabilitySync/executor.js";
+import { buildVulnerabilityReviewContext, type VulnerabilityReviewContextStore } from "../../vulnerability/context.js";
+import { runVulnerabilityScan, type VulnerabilityScanStore } from "../../services/vulnerabilitySync/scan.js";
 
 /**
  * 0.4.3 (MEM-10) — engine operations the depth-agent executors call. Declared
@@ -48,6 +50,7 @@ export interface JobEngineOps {
   /** Per-user, org-pinned GitLab connector credential for a manual MR review. */
   findGitlabAccountAuthorization?(userId: string, orgId: string): Promise<{ token: string; apiBase: string; config: Record<string, unknown> } | null>;
   reviewRunner?(lens: "security" | "code" | "pentest", orgId?: string): LLMRunner | Promise<LLMRunner | undefined> | undefined;
+  scheduledModelRunner?(userId: string, role?: string): Promise<LLMRunner>;
   reviewAssignment?(lens: "security" | "code" | "pentest", orgId?: string): { maxDiffChars?: number; timeoutMs?: number } | Promise<{ maxDiffChars?: number; timeoutMs?: number } | undefined> | undefined;
   pentestAgentConfig?(orgId: string): Promise<LLMConfig | null>;
   /** Ingest completed pentest findings into the org's cognitive memory (redacted, org-scoped). */
@@ -103,7 +106,12 @@ async function prReviewDeps(ctx: JobExecContext, lens: "security" | "code" | "pe
     getIntegration: (installationId) => engine.findGithubAppByInstallation(installationId),
     getUserAuthorization: (userId) => engine.findGithubAccountAuthorization?.(userId) ?? Promise.resolve(null),
     getGitlabAuthorization: (userId, requestedOrgId) => engine.findGitlabAccountAuthorization?.(userId, requestedOrgId) ?? Promise.resolve(null),
-    getVulnerabilityIntelligence: () => loadVulnerabilityIntelligence(),
+    getVulnerabilityContext: (input) => buildVulnerabilityReviewContext({
+      store: ctx.store as unknown as VulnerabilityReviewContextStore,
+      orgId: input.orgId,
+      repo: input.repo,
+      diff: input.diff,
+    }),
     maxDiffChars: assignment?.maxDiffChars,
     timeoutMs: assignment?.timeoutMs,
     onProgress: (event) => {
@@ -121,12 +129,20 @@ function userIdOf(input: any): string {
   return typeof u === "string" && u ? u : "default";
 }
 
+async function scheduledRunner(input: any, ctx: JobExecContext, role = "synthesis"): Promise<LLMRunner> {
+  return await ctx.engine?.scheduledModelRunner?.(userIdOf(input), role) ?? ctx.llmRunner;
+}
+
 const EXECUTORS: Record<string, JobExecutor> = {
-  identity_distiller: async (input, { store, llmRunner }) => {
+  identity_distiller: async (input, ctx) => {
+    const { store } = ctx;
+    const llmRunner = await scheduledRunner(input, ctx);
     const r = await distillCoreIdentity({ userId: userIdOf(input), store, llmRunner });
     return { success: r.success };
   },
-  focus_distiller: async (input, { store, llmRunner }) => {
+  focus_distiller: async (input, ctx) => {
+    const { store } = ctx;
+    const llmRunner = await scheduledRunner(input, ctx);
     const r = await distillFocusScenes({ userId: userIdOf(input), store, llmRunner });
     return { sceneNames: r.sceneNames };
   },
@@ -164,7 +180,9 @@ const EXECUTORS: Record<string, JobExecutor> = {
     }
     return { parentId: parent?.id ?? null, sealed: parent ? childIds.length : 0 };
   },
-  tree_digest: async (input, { store, llmRunner }) => {
+  tree_digest: async (input, ctx) => {
+    const { store } = ctx;
+    const llmRunner = await scheduledRunner(input, ctx);
     const nodeIds: string[] = Array.isArray(input?.nodeIds) ? input.nodeIds.map(String) : [];
     if (nodeIds.length === 0) return { summarized: [], skipped: 0, reason: "no nodeIds supplied" };
     return digestTreeNodes({ userId: userIdOf(input), nodeIds, store, llmRunner });
@@ -185,6 +203,19 @@ const EXECUTORS: Record<string, JobExecutor> = {
   // ADR-016 C3 — sync one server-side connector (DB config + sealed token → core
   // runtime → owner's memory), persisting the checkpoint back to the DB.
   connector_sync: async (input) => runConnectorSync(String(input?.connectorId ?? "")),
+  vulnerability_sync: async (input, ctx) => runVulnerabilitySync({
+    store: ctx.store as unknown as VulnerabilitySyncStore,
+    nvdApiKey: process.env.NVD_API_KEY?.trim() || undefined,
+    sourceId: input?.sourceId === "nvd" || input?.sourceId === "cisa-kev" || input?.sourceId === "first-epss"
+      ? input.sourceId
+      : undefined,
+  }),
+  vulnerability_scan: async (input, ctx) => runVulnerabilityScan({
+    store: ctx.store as unknown as VulnerabilityScanStore,
+    orgId: String(input?.orgId ?? ""),
+    repo: String(input?.repo ?? ""),
+    scanId: String(input?.scanId ?? ""),
+  }),
 
   // ADR-017 D5 — the GitHub App bot's automatic PR reviews. Both are enqueued by the
   // pull_request webhook; each mints the installation token, reviews the diff with its

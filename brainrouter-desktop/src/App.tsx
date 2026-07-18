@@ -8,13 +8,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { InteractionRequest } from '@kinqs/brainrouter-agent-protocol';
 // UI-TEST fusion — the generated screen map + user-journey stories the Atlas
 // Screens mode + Browser panel render, and that runStory replays.
-import type { UiMap, Story } from '@kinqs/brainrouter-core/uitest';
-import { PANEL_DEFS, type PanelId, type SearchHit } from './panels/index.js';
+import type { UiMap, Story } from '@kinqs/brainrouter-core/browser';
+import { PANEL_DEFS, type PanelId, type SearchHit, type WorkspaceMode } from './panels/index.js';
 import type { RequirementRecord, AnnotationRecord, ArtifactRecord, AtlasGraph, TrackProject, WorkItem, Sprint, Module, SavedView, AutomationRule, ProjectMember } from '@kinqs/brainrouter-types';
 import type { GitTrackContext, SyncConfig, SyncResult, TrackPrStatus } from './track/TrackView.js';
 import type { ScheduleRecordView } from './lib/schedule/scheduleView.js';
 import { SESSION_BASE } from './lib/session/list/sessionPagination.js';
 import { usePanels } from './lib/panels/usePanels.js';
+import { environmentPanelLayout } from './lib/panels/sideRailLayout.js';
 import { buildCommandList, runCommand, type CmdCtx, type CommandsCatalog, type DeskCommand, type SettingsSection } from './lib/commands/commands.js';
 import { tagQueryId } from './lib/workspace/workspaceEvents.js';
 import { duplicateTitleKeys } from './lib/session/list/sessionDisplay.js';
@@ -86,11 +87,20 @@ export function App(): React.ReactElement {
   const [info, setInfo] = useState<{
     sessionKey?: string;
     model?: string;
+    provider?: string;
     workspaceRoot?: string;
     username?: string;
     accountSignedIn?: boolean;
     accountEmail?: string;
-  }>({});
+  }>(() => {
+    const status = window.brainrouter.getBootstrapState?.()?.accountStatus;
+    const account = status?.account;
+    return {
+      username: account?.displayName || account?.email || undefined,
+      accountSignedIn: status?.signedIn === true,
+      accountEmail: account?.email || undefined,
+    };
+  });
   const [hostUp, setHostUp] = useState(false);
   const [interaction, setInteraction] = useState<InteractionRequest | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -118,9 +128,9 @@ export function App(): React.ReactElement {
   // Session efficiency — what the runtime SAVED: prompt-cache reuse (in `tokens`),
   // history compaction, and memory recall. Reset when the session changes.
   const [efficiency, setEfficiency] = useState<{ compactions: number; droppedMessages: number; memoriesRecalled: number }>({ compactions: 0, droppedMessages: 0, memoriesRecalled: 0 });
-  // Workspace MODE — Chat · Code · Track · Design, switched from the left sidebar
-  // (each swaps the whole main surface). Code is the default agentic-coding view.
-  const [mode, setMode] = useState<'chat' | 'track' | 'code' | 'design'>('code');
+  // Workspace MODE — switched from the left sidebar (each swaps the whole main
+  // surface). Code is the default agentic-coding view.
+  const [mode, setMode] = useState<WorkspaceMode>('code');
   // Track mode data (the per-workspace project + its work items), fed by the
   // host `track-*` queries. Mutations re-fetch the item list.
   const [track, setTrack] = useState<{ project: TrackProject | null; items: WorkItem[]; sprints: Sprint[]; modules: Module[]; views: SavedView[]; automations: AutomationRule[]; members: ProjectMember[]; sync: { config: SyncConfig | null; result: SyncResult | null }; git: GitTrackContext | null; pr: TrackPrStatus | null }>({ project: null, items: [], sprints: [], modules: [], views: [], automations: [], members: [], sync: { config: null, result: null }, git: null, pr: null });
@@ -356,7 +366,7 @@ export function App(): React.ReactElement {
     q, settingsOpen: settings.open, mode, info, hostUp, refreshGit, editorAnyDirty: editor.anyDirty, running,
     lastPlan, activeSideTab, setGlobalBoards, setWorkspaces, setProjSessions, taskView, workflowView,
     cardOpenRef, setTaskView, setWorkflowView, viewKey, chatWidth, chatSize, toast, setToast, envOpen,
-    railWidth, railOpen, expandedProjects, workrowRef, setWorkW, setPaletteOpen, togglePanel, setSideFullScreen,
+    railWidth, railOpen, expandedProjects, workrowRef, setWorkW, setPaletteOpen, togglePanel, ensurePanel, setSideFullScreen,
     setSidePanelOpen, setTermDockOpen, openSettings, sessionsRef, resumeSessionRef, zoomIn, zoomOut, resetZoom,
     sidePanelOpen, sidePinned, codeFont, theme, accent,
   });
@@ -489,10 +499,10 @@ export function App(): React.ReactElement {
   const runStory = (story: Story): void => {
     const url = (localStorage.getItem('br-browser-url') || '').trim();
     try { localStorage.setItem('br-browser-runstory', JSON.stringify({ id: story.id, title: story.title, steps: enrichStorySteps(story, atlasUiMap) })); } catch { /* ignore */ }
-    ensurePanel('uitest');
+    ensurePanel('browser');
     setToast(`Preparing "${story.title}"…`);
     window.dispatchEvent(new CustomEvent('br-browser-log', { detail: { message: `▶ Preparing "${story.title}" — ensuring the app is served…` } }));
-    q('q-uitest-ensure', 'uitest:ensure-app', url ? { url } : {});
+    q('q-browser-ensure', 'browser:ensure-app', url ? { url } : {});
   };
 
   // The Browser panel takes no props, so its "save this screenshot" and "story run
@@ -502,11 +512,11 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const onSaveShot = (e: Event): void => {
       const d = (e as CustomEvent<{ dataUrl?: string; name?: string }>).detail;
-      if (d?.dataUrl) q('q-uitest-shot', 'uitest:save-screenshot', { dataUrl: d.dataUrl, name: d.name });
+      if (d?.dataUrl) q('q-browser-shot', 'browser:save-screenshot', { dataUrl: d.dataUrl, name: d.name });
     };
     const onRunResult = (e: Event): void => {
       const d = (e as CustomEvent<Record<string, unknown>>).detail;
-      if (d) q('q-uitest-report', 'uitest:run-report', d);
+      if (d) q('q-browser-report', 'browser:run-report', d);
     };
     // A11y-row -> source: the Browser panel asks App to open a file at a line.
     const onOpenFile = (e: Event): void => {
@@ -515,7 +525,7 @@ export function App(): React.ReactElement {
     };
     // The Browser panel wants the UI map but has none yet -> load the manifest;
     // its result lands in atlasUiMap and is mirrored back via localStorage.
-    const onLoadUiMap = (): void => { q('q-uitest-manifest', 'uitest:manifest'); };
+    const onLoadUiMap = (): void => { q('q-browser-manifest', 'browser:manifest'); };
     window.addEventListener('br-browser-savescreenshot', onSaveShot);
     window.addEventListener('br-browser-runresult', onRunResult);
     window.addEventListener('br-browser-openfile', onOpenFile);
@@ -563,11 +573,11 @@ export function App(): React.ReactElement {
   // width (760px content + padding ≈ 820): opening Environment must never
   // visibly shrink the conversation. No room → column AND toggle yield.
   const envRoom = !sideFullScreen && (workW === 0 || workW - (sidePanelOpen ? sideWidth : 0) - 316 >= 820 / zoomFactor);
-  const envVisible = envOpen && !homeMode && envRoom;
+  const envLayout = environmentPanelLayout(envOpen, homeMode, envRoom);
   const railAnim = useClosable(railOpen);
   const sideAnim = useClosable(sidePanelOpen);
   const dockAnim = useClosable(termDockOpen);
-  const envAnim = useClosable(envVisible, 150);
+  const envAnim = useClosable(envLayout.mounted, 150);
 
   return (
     <div className="app">
@@ -593,7 +603,7 @@ export function App(): React.ReactElement {
         tabTitle={tabTitle} renderPanelBody={renderPanelBody} openSideView={openSideView} lastPlan={lastPlan}
         changedFiles={changedFiles} backgroundTasks={backgroundTasks} fleet={fleet} toolLog={toolLog} schedules={schedules}
         worktrees={worktrees} review={review} requirements={requirements} annotations={annotations} artifacts={artifacts}
-        ci={ci} envRoom={envRoom} homeMode={homeMode} gitInfo={gitInfo} info={info} sessionTitle={sessionTitle}
+        ci={ci} envRoom={envRoom} envDrawer={envLayout.drawer} homeMode={homeMode} gitInfo={gitInfo} info={info} sessionTitle={sessionTitle}
         taskView={taskView} setTaskView={setTaskView} chatRef={chatRef} atBottomRef={atBottomRef} setAtBottom={setAtBottom}
         workflowView={workflowView} setWorkflowView={setWorkflowView} renderRow={renderRow} homeStats={homeStats}
         statsTab={statsTab} setStatsTab={setStatsTab} statsRange={statsRange} setStatsRange={setStatsRange}

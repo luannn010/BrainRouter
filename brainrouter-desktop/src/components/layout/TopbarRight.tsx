@@ -10,11 +10,11 @@ import type { PopId } from '../../types.js';
 import type { SettingsSection } from '../../lib/commands/commands.js';
 import { sideRailFullscreenTitle } from '../../lib/panels/sideRailLayout.js';
 import { VIEW_MENU } from '../../constants.js';
-import type { PanelId } from '../../panels/index.js';
+import type { PanelId, WorkspaceMode } from '../../panels/index.js';
 
 export interface TopbarRightProps {
   /** Workspace mode — Environment/terminal are Code-only; side views also apply to Track. */
-  mode: 'chat' | 'track' | 'code' | 'design';
+  mode: WorkspaceMode;
   homeMode: boolean;
   envRoom: boolean;
   envOpen: boolean;

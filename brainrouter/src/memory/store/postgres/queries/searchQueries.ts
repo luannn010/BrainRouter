@@ -23,7 +23,19 @@ import type { Executor } from "./executor.js";
 export interface VecContext {
   readonly vecReady: boolean;
   readonly vecDimensions: number;
-  initVec(dimensions: number): Promise<void>;
+  initVec(dimensions: number, opts?: { allowRebuild?: boolean }): Promise<void>;
+}
+
+function recallScope(userParam: string, orgParam: string): string {
+  return `(r.user_id = ${userParam}
+    OR (r.org_id = ${orgParam} AND r.visibility = 'org')
+    OR (r.visibility = 'team' AND EXISTS (
+      SELECT 1 FROM teams access_team
+      JOIN team_members access_member ON access_member.team_id = access_team.id
+      WHERE access_team.id = r.team_id AND access_member.user_id = ${userParam}
+        AND (access_team.kind = 'personal'
+          OR (access_team.kind = 'organization' AND access_team.org_id = ${orgParam} AND r.org_id = ${orgParam}))
+    )))`;
 }
 
 export async function searchCognitiveFts(exec: Executor, userId: string, query: string, limit: number, orgId?: string): Promise<CognitiveFtsResult[]> {
@@ -32,10 +44,10 @@ export async function searchCognitiveFts(exec: Executor, userId: string, query: 
   // (visibility='org') from that org, not just the caller's own. GATED: without
   // orgId the WHERE is unchanged (byte-identical to the user-only path). Final
   // per-member visibility is enforced in applyFilters (orgVisibilityAllows).
-  const scope = orgId ? `(r.user_id = $1 OR (r.org_id = $4 AND r.visibility = 'org'))` : `r.user_id = $1`;
+  const scope = orgId ? recallScope("$1", "$4") : `r.user_id = $1`;
   const params = orgId ? [userId, query, limit, orgId] : [userId, query, limit];
   const rows = await exec.rows<any>(
-    `SELECT r.record_id, r.user_id, r.org_id, r.visibility, r.workspace_tag, r.project_tag,
+    `SELECT r.record_id, r.user_id, r.org_id, r.visibility, (r.visibility = 'team') AS team_access, r.workspace_tag, r.project_tag,
             r.content, r.type, r.priority, r.scene_name, r.skill_tag,
             r.session_key, r.timestamp_str, r.created_time, r.citation_count,
             ts_rank(r.content_tsv, plainto_tsquery('english', $2)) AS rank
@@ -57,6 +69,7 @@ export async function searchCognitiveFts(exec: Executor, userId: string, query: 
     // Attach org scope for applyFilters (not on the shared type — read via cast).
     (out as unknown as Record<string, unknown>).org_id = r.org_id ?? null;
     (out as unknown as Record<string, unknown>).visibility = r.visibility ?? null;
+    (out as unknown as Record<string, unknown>).team_access = r.team_access === true;
     // Keep scope tags on org-shared candidates. The later fallback lookup is
     // owner-scoped, so it cannot recover another member's tags for us.
     (out as unknown as Record<string, unknown>).workspace_tag = r.workspace_tag ?? null;
@@ -91,7 +104,10 @@ export async function searchCognitiveFtsAsOf(exec: Executor, userId: string, que
 
 export async function upsertCognitiveVec(exec: Executor, vec: VecContext, recordId: string, embedding: Float32Array): Promise<void> {
   if (!vec.vecReady) return;
+  if (embedding.length === 0) return; // a malformed/empty embedding can't be stored — skip (never build a vector(0))
   if (vec.vecDimensions !== embedding.length) {
+    // WRITE path: a confirmed embedding length. Re-dimension cognitive_vec to the
+    // live embedder's real width (drops old-width vectors → they get re-embedded).
     await vec.initVec(embedding.length);
   }
   if (!vec.vecReady) return;
@@ -104,20 +120,22 @@ export async function upsertCognitiveVec(exec: Executor, vec: VecContext, record
 
 export async function searchCognitiveVec(exec: Executor, vec: VecContext, userId: string, queryEmbedding: Float32Array, limit: number, orgId?: string): Promise<VectorSearchResult[]> {
   if (!vec.vecReady) return [];
-  if (vec.vecDimensions !== queryEmbedding.length) {
-    await vec.initVec(queryEmbedding.length);
-  }
+  // A READ must never mutate the schema. A width mismatch means the embedder
+  // changed: the stored vectors are the old width and can't be compared to this
+  // query, so skip vector search this turn (recall degrades to FTS). The WRITE
+  // path re-dimensions + re-embeds — a recall must NEVER drop a populated table.
+  if (vec.vecDimensions !== queryEmbedding.length) return [];
   if (!vec.vecDimensions) return [];
   try {
     // ADR-010 P5b — gated org-shared union (see searchCognitiveFts). Without orgId
     // this is the unchanged user-only path.
-    const scope = orgId ? `(r.user_id = $2 OR (r.org_id = $4 AND r.visibility = 'org'))` : `r.user_id = $2`;
+    const scope = orgId ? recallScope("$2", "$4") : `r.user_id = $2`;
     const params = orgId
       ? [toVectorLiteral(queryEmbedding), userId, limit, orgId]
       : [toVectorLiteral(queryEmbedding), userId, limit];
     const rows = await exec.rows<any>(
       `SELECT v.record_id, (v.embedding <=> $1::vector) AS distance,
-              r.user_id, r.org_id, r.visibility, r.workspace_tag, r.project_tag,
+              r.user_id, r.org_id, r.visibility, (r.visibility = 'team') AS team_access, r.workspace_tag, r.project_tag,
               r.content, r.type, r.priority, r.scene_name, r.skill_tag,
               r.session_key, r.timestamp_str, r.created_time
          FROM cognitive_vec v
@@ -137,6 +155,7 @@ export async function searchCognitiveVec(exec: Executor, vec: VecContext, userId
       };
       (out as unknown as Record<string, unknown>).org_id = r.org_id ?? null;
       (out as unknown as Record<string, unknown>).visibility = r.visibility ?? null;
+      (out as unknown as Record<string, unknown>).team_access = r.team_access === true;
       (out as unknown as Record<string, unknown>).workspace_tag = r.workspace_tag ?? null;
       (out as unknown as Record<string, unknown>).project_tag = r.project_tag ?? null;
       return out;

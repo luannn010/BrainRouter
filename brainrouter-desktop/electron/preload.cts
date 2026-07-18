@@ -4,7 +4,16 @@
  */
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// Credential-free, local-only identity captured before the utility host boots.
+// sendSync is deliberate here: one small config read removes the signed-out
+// first-frame flash and never waits on network or safeStorage.
+let desktopBootstrapState: unknown = null;
+try { desktopBootstrapState = ipcRenderer.sendSync('desktop-bootstrap-state'); } catch { /* older main process */ }
+
 contextBridge.exposeInMainWorld('brainrouter', {
+  getBootstrapState(): unknown {
+    return desktopBootstrapState;
+  },
   send(command: unknown): void {
     ipcRenderer.send('agent-command', command);
   },
@@ -84,5 +93,48 @@ contextBridge.exposeInMainWorld('brainrouter', {
     setMode(args: { enabled?: boolean; mode?: string }): Promise<unknown> {
       return ipcRenderer.invoke('computerUse:setMode', args);
     },
+  },
+  // Meetings (ADR-018) — the renderer never holds the account bearer, so meeting
+  // reads/writes are proxied through the main process to the account backend.
+  meetings: {
+    list(input?: { cursor?: string; limit?: number }, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:list', input, orgId); },
+    get(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:get', id, orgId); },
+    overview(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:overview', id, orgId); },
+    transcript(id: string, input?: { cursor?: string; limit?: number }, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:transcript', id, input, orgId); },
+    create(input: { title: string; transcript: string; template?: string; scope?: string; teamId?: string; date?: string; attendees?: string[] }, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:create', input, orgId); },
+    updateSummary(id: string, summaryMarkdown: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:updateSummary', id, summaryMarkdown, orgId); },
+    transcribe(input: { bytes: Uint8Array; contentType?: string; language?: string }): Promise<unknown> { return ipcRenderer.invoke('meetings:transcribe', input); },
+    regenerate(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:regenerate', id, orgId); },
+    setScope(id: string, scope: string, opts?: { teamId?: string }, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:setScope', id, scope, opts, orgId); },
+    actionToTrack(meetingId: string, actionId: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:actionToTrack', meetingId, actionId, orgId); },
+    actionUntrack(meetingId: string, actionId: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:actionUntrack', meetingId, actionId, orgId); },
+    toggleAction(meetingId: string, actionId: string, done: boolean, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:toggleAction', meetingId, actionId, done, orgId); },
+    // SERVER Track board (org-scoped /api/track), surfaced inside Meetings mode.
+    serverTracks(orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:serverTracks', orgId); },
+    serverTrackCreate(input: { title: string; description?: string; priority?: string; assignee?: string; statusCategory?: string }, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:serverTrackCreate', input, orgId); },
+    serverTrackTransition(id: string, statusCategory: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:serverTrackTransition', id, statusCategory, orgId); },
+    serverTrackSetDone(id: string, done: boolean, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('meetings:serverTrackSetDone', id, done, orgId); },
+    serverTrackRemove(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('action:meetings:serverTrackRemove', id, orgId); },
+  },
+  // Team spaces — organization context + global personal teams. Proxied through
+  // main so the renderer never receives the account bearer.
+  teams: {
+    contexts(): Promise<unknown> { return ipcRenderer.invoke('teams:contexts'); },
+    list(orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:list', orgId); },
+    get(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:get', id, orgId); },
+    create(name: string, kind: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:create', name, kind, orgId); },
+    addMember(id: string, account: string, role: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:addMember', id, account, role, orgId); },
+    removeMember(id: string, userId: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:removeMember', id, userId, orgId); },
+    remove(id: string, orgId?: string): Promise<unknown> { return ipcRenderer.invoke('teams:remove', id, orgId); },
+  },
+  // K-desktop — cross-surface chat sync. OPT-IN: push mirrors the active chat
+  // session's user/assistant turns up to the shared /api/chat/threads API so a
+  // desktop conversation also shows on the dashboard + CLI. Local transcripts
+  // are untouched; nothing runs on a normal turn, only on explicit user action.
+  chatSync: {
+    push(args: { workspaceRoot: string; sessionKey: string; title?: string }): Promise<{ threadId: string; messageCount: number; created: boolean; title: string }> {
+      return ipcRenderer.invoke('chatSync:push', args);
+    },
+    list(): Promise<Array<Record<string, unknown>>> { return ipcRenderer.invoke('chatSync:list'); },
   },
 });

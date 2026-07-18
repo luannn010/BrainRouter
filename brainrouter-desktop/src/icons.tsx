@@ -77,8 +77,9 @@ const PATHS: Record<string, React.ReactNode> = {
   fork: <><circle cx="4" cy="3.2" r="1.7" /><circle cx="12" cy="3.2" r="1.7" /><circle cx="8" cy="12.8" r="1.7" /><path d="M4 5v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5M8 9v2.1" /></>,
   external: <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" />,
   'design-studio': <><circle cx="8" cy="8" r="2" /><circle cx="3.5" cy="4" r="1" /><circle cx="12.5" cy="4.5" r="1" /><circle cx="12" cy="12.5" r="1" /><path d="M8 8 3.5 4M8 8l4.5-3.5M8 8l4 4.5" /></>,
-  // Design Studio toolbar glyphs (Figma-style tool set).
-  cursor: <path d="M4.5 1.8 12.4 8.3l-4.3.9 2 4.3-1.9.9-2-4.4-1.7 2.5V1.8Z" />,
+  // Design Studio toolbar glyphs (Figma-style tool set). `cursor` is the one
+  // key both branches defined; release/0.4.17's arrow wins so the app has one.
+  cursor: <path d="M3 2.2 3 13.2 6 10.2 8 14.2 10 13.4 8 9.4 12 9.2 3 2.2Z" />,
   hand: <path d="M5.3 7.4V3.7a1 1 0 0 1 2 0V7m0-3.9v-.5a1 1 0 0 1 2 0V7m0-3.4a1 1 0 0 1 2 0v3.8m0-2.6a1 1 0 0 1 2 0v4.5c0 2.9-1.9 4.9-4.6 4.9-2.1 0-3.2-.9-4.2-2.7L3 9.5a1 1 0 0 1 1.7-1l.6.9" />,
   frame: <path d="M5.3 2v12M10.7 2v12M2 5.3h12M2 10.7h12" />,
   section: <path d="M2.8 2.8h4.4v4.4H2.8V2.8Zm6 0h4.4v4.4H8.8V2.8Zm-6 6h4.4v4.4H2.8V8.8Zm6 0h4.4v4.4H8.8V8.8Z" />,

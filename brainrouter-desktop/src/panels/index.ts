@@ -5,7 +5,7 @@
  */
 export { CodeBlock, langForPath } from './code.js';
 export { DiffView, parseUnifiedDiff, type DiffLine, type DiffHunk, type DiffFile } from './diff.js';
-export { Panel, PanelPicker, MANUAL_PANEL_DEFS, PANEL_DEFS, type PanelId } from './Panel.js';
+export { Panel, PanelPicker, MANUAL_PANEL_DEFS, PANEL_DEFS, type PanelId, type WorkspaceMode } from './Panel.js';
 export { GATE_LABEL, type ReviewFindingView, type ReviewGateView } from './reviewShared.js';
 export { FilesPanel, buildFileTree, type GrepHit } from './files/FilesPanel.js';
 export { FileViewerPanel } from './files/FileViewerPanel.js';
@@ -17,6 +17,7 @@ export { ToolsPanel } from './workspace/ToolsPanel.js';
 export { WorktreesPanel } from './workspace/WorktreesPanel.js';
 export { AttachmentsPanel } from './workspace/AttachmentsPanel.js';
 export { PreviewPanel } from './workspace/PreviewPanel.js';
+export { ServersPanel } from './workspace/ServersPanel.js';
 export { TasksPanel, type FinishedTask } from './planning/TasksPanel.js';
 export { TaskDetailPanel } from './planning/TaskDetailPanel.js';
 export { SchedulePanel } from './planning/SchedulePanel.js';
@@ -30,6 +31,8 @@ export { MemoryPanel } from './memory/MemoryPanel.js';
 export { ContextPanel } from './memory/ContextPanel.js';
 export { AtlasPanel, type AtlasPanelProps } from './atlas/AtlasPanel.js';
 export { CIPanel } from './ci/CIPanel.js';
-export { EditorPanel } from './editing/EditorPanel.js';
+// EditorPanel intentionally is not re-exported here: it owns Monaco (~5 MB)
+// and is loaded through React.lazy in renderPanelBody. A barrel re-export made
+// Vite treat it as both static and dynamic, pulling Monaco into first paint.
 export { BrowserPanel } from './BrowserPanel.js';
 export { DesignStudioPanel } from './DesignStudioPanel.js';

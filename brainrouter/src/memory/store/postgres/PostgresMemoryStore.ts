@@ -91,7 +91,7 @@ import type {
   PentestTargetRecord,
 } from "@kinqs/brainrouter-types";
 import { createPgPool } from "./connection.js";
-import { loadMigrations, applyMigrations } from "./migrate.js";
+import { loadMigrations, applyMigrations, withSchemaLock } from "./migrate.js";
 import {
   asNumber,
   type CompressionEntryInput,
@@ -108,6 +108,12 @@ import {
   type CcrContext,
 } from "./queries/compressionQueries.js";
 import * as sensory from "./queries/sensoryQueries.js";
+import * as meetings from "./queries/meetingsQueries.js";
+import * as track from "./queries/trackQueries.js";
+import * as teams from "./queries/teamsQueries.js";
+import * as chatThreads from "./queries/chatThreadsQueries.js";
+import * as vulnerability from "./queries/vulnerabilityQueries.js";
+import * as vulnScans from "./queries/vulnerabilityScanQueries.js";
 import * as cognitive from "./queries/cognitiveQueries.js";
 import * as operations from "./queries/operationsQueries.js";
 import * as search from "./queries/searchQueries.js";
@@ -127,6 +133,9 @@ import * as sharing from "./queries/memorySharingQueries.js";
 import * as projects from "./queries/projectQueries.js";
 import * as adminConsole from "./queries/adminConsoleQueries.js";
 import * as providerCfg from "./queries/providerConfigQueries.js";
+import * as modelPolicy from "./queries/modelPolicyQueries.js";
+import * as remoteAccess from "./queries/remoteAccessQueries.js";
+import * as remoteControl from "./queries/remoteControlQueries.js";
 import * as integrationCfg from "./queries/integrationConfigQueries.js";
 import * as designArtifacts from "./queries/designQueries.js";
 import type { DesignArtifactRecord } from "../../../design/store.js";
@@ -137,6 +146,32 @@ import type { Role } from "../../../tenancy/rbac.js";
 import type { OrganizationRecord, OrgMemberRecord, OrgMembership, OrgPlan } from "../../../tenancy/types.js";
 import type { ProviderStore } from "../../../providers/store.js";
 import type { ProviderConfigRecord, ProviderConfigInput, ProviderKind, ResolvedProviderConfig } from "../../../providers/types.js";
+import type {
+  ModelPolicyStore,
+  ProviderModelInput,
+  ProviderModelPatch,
+  ProviderModelRecord,
+} from "../../../providers/modelPolicyStore.js";
+import type {
+  DeviceSessionInput,
+  DeviceSessionRecord,
+  DeviceSessionRotationInput,
+  DeviceSessionRotationResult,
+  RemoteAccessAuditInput,
+  RemoteAccessAuditRecord,
+  RemoteAccessGrantInput,
+  RemoteAccessGrantRecord,
+  RemoteAccessStore,
+  RemoteDeviceInput,
+  RemoteDeviceKind,
+  RemoteDeviceRecord,
+  RemoteEnrollmentChallengeInput,
+  RemoteEnrollmentChallengeRecord,
+  RemoteGrantDecision,
+  RemoteRelayTicketInput,
+  RemoteRelayTicketRecord,
+  RemoteRelayTicketRevocation,
+} from "../../../remote/store.js";
 import type { IntegrationStore } from "../../../integrations/store.js";
 import type { ConnectorStore, ConnectorConfigRecord, ConnectorConfigInput, ConnectorConfigPatch, ResolvedConnector, OAuthAppConfig, ResolvedOAuthApp } from "../../../connectors/store.js";
 import type { IntegrationConfigRecord, IntegrationConfigInput, IntegrationKind, ResolvedIntegration } from "../../../integrations/types.js";
@@ -174,7 +209,7 @@ export interface PostgresMemoryStoreOptions {
   compressionStore?: { ttlSeconds?: number; maxEntries?: number; now?: () => number };
 }
 
-export class PostgresMemoryStore implements IMemoryStore, TenancyStore, ProviderStore, IntegrationStore, ConnectorStore {
+export class PostgresMemoryStore implements IMemoryStore, TenancyStore, ProviderStore, ModelPolicyStore, RemoteAccessStore, IntegrationStore, ConnectorStore {
   private readonly pool: Pool;
   private readonly ownsPool: boolean;
   private vecReady = false;
@@ -219,7 +254,7 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
     this.vecCtx = {
       get vecReady() { return self.vecReady; },
       get vecDimensions() { return self.vecDimensions; },
-      initVec: (dimensions) => this.initVec(dimensions),
+      initVec: (dimensions, opts) => this.initVec(dimensions, opts),
     };
     this.ccrCtx = {
       ccrTtlSeconds: this.ccrTtlSeconds,
@@ -277,9 +312,25 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
     await applyMigrations(this.pool, migrations);
   }
 
-  public async initVec(dimensions: number): Promise<void> {
+  public async initVec(dimensions: number, opts?: { allowRebuild?: boolean }): Promise<void> {
     if (dimensions <= 0) return;
+    // Serialize this DDL with migrations across processes (see withSchemaLock):
+    // CREATE TABLE IF NOT EXISTS embedding_meta / cognitive_vec race the same way
+    // migrations do when two boots overlap.
+    //
+    // allowRebuild (default true): the WRITE path passes a CONFIRMED embedding
+    // length and MAY drop+recreate cognitive_vec on a genuine dimension change
+    // (an embedder swap → the old vectors are the wrong width and get re-embedded).
+    // BOOT passes allowRebuild:false — it must NEVER drop on a *guessed* dimension,
+    // so the existing store's width is adopted as-is and stored vectors are safe
+    // even when the boot hint is stale.
+    const allowRebuild = opts?.allowRebuild ?? true;
+    const effectiveDim = await withSchemaLock(this.pool, () => this.initVecLocked(dimensions, allowRebuild));
+    this.vecDimensions = effectiveDim;
+    this.vecReady = true;
+  }
 
+  private async initVecLocked(dimensions: number, allowRebuild: boolean): Promise<number> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS embedding_meta (
         id integer PRIMARY KEY CHECK (id = 1),
@@ -288,32 +339,44 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
       )
     `);
 
-    // Detect an existing cognitive_vec and its dimension. pgvector stores the
-    // declared dim in the column's atttypmod (typmod - 4 == dimensions for
-    // `vector(N)`). Drop + recreate on a dimension change, mirroring the SQLite
-    // store's vec0 recreate path.
+    // Read the EXISTING cognitive_vec column dimension. pgvector stores the
+    // declared dimension verbatim in atttypmod (NO varlena +4 header: a
+    // `vector(768)` column has atttypmod = 768; an undimensioned `vector` column
+    // has atttypmod = -1). NULLIF(...,-1) maps the latter to NULL.
     const dimRow = await this.one<{ dim: number | null }>(
-      `SELECT (atttypmod - 4) AS dim
+      `SELECT NULLIF(a.atttypmod, -1) AS dim
          FROM pg_attribute a
          JOIN pg_class c ON c.oid = a.attrelid
         WHERE c.relname = 'cognitive_vec' AND a.attname = 'embedding' AND a.attnum > 0 AND NOT a.attisdropped`,
     );
     const existingDim = dimRow && dimRow.dim != null ? asNumber(dimRow.dim, -1) : -1;
+    const metaRow = await this.one<{ dimensions: number }>("SELECT dimensions FROM embedding_meta WHERE id = 1");
+    const metaDim = metaRow ? asNumber(metaRow.dimensions, -1) : -1;
 
-    if (existingDim !== -1 && existingDim !== dimensions) {
+    // Effective dimension. On the write path the passed length is authoritative.
+    // On boot we ADOPT what already exists (the live column, else the recorded
+    // meta) and only fall back to the passed default for a truly fresh store —
+    // so a stale boot hint can never drop a populated cognitive_vec.
+    const effectiveDim = allowRebuild
+      ? dimensions
+      : (existingDim > 0 ? existingDim : (metaDim > 0 ? metaDim : dimensions));
+
+    // Destructive rebuild ONLY when a real, differing dimension is confirmed.
+    if (existingDim > 0 && existingDim !== effectiveDim) {
       await this.pool.query("DROP TABLE IF EXISTS cognitive_vec");
-      await this.run("UPDATE embedding_meta SET dimensions = $1, created_at = $2 WHERE id = 1", [dimensions, new Date().toISOString()]);
-    } else {
-      const meta = await this.one<{ dimensions: number }>("SELECT dimensions FROM embedding_meta WHERE id = 1");
-      if (!meta) {
-        await this.run("INSERT INTO embedding_meta (id, dimensions, created_at) VALUES (1, $1, $2)", [dimensions, new Date().toISOString()]);
-      }
+    }
+    if (metaDim !== effectiveDim) {
+      await this.run(
+        `INSERT INTO embedding_meta (id, dimensions, created_at) VALUES (1, $1, $2)
+         ON CONFLICT (id) DO UPDATE SET dimensions = EXCLUDED.dimensions, created_at = EXCLUDED.created_at`,
+        [effectiveDim, new Date().toISOString()],
+      );
     }
 
     await this.pool.query(
       `CREATE TABLE IF NOT EXISTS cognitive_vec (
          record_id text PRIMARY KEY,
-         embedding vector(${dimensions})
+         embedding vector(${effectiveDim})
        )`,
     );
     // Cosine ANN index — tunable via env (defaults preserve the prior behaviour:
@@ -335,8 +398,7 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
       }
     }
 
-    this.vecDimensions = dimensions;
-    this.vecReady = true;
+    return effectiveDim;
   }
 
   public isVecAvailable(): boolean {
@@ -408,7 +470,7 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   public upsertOrgIdentity(rec: orgPersona.OrgIdentityRecord): Promise<void> { return orgPersona.upsertOrgIdentity(this.exec, rec); }
 
   // ── artifact/memory sharing (ADR-014 P-D) ────────────────────────────────
-  public setMemoryVisibility(recordId: string, userId: string, orgId: string, visibility: "private" | "org"): Promise<boolean> { return sharing.setMemoryVisibility(this.exec, recordId, userId, orgId, visibility); }
+  public setMemoryVisibility(recordId: string, userId: string, orgId: string, visibility: "private" | "team" | "org", teamId?: string | null): Promise<boolean> { return sharing.setMemoryVisibility(this.exec, recordId, userId, orgId, visibility, teamId); }
   public listOrgSharedMemories(orgId: string, limit = 50): Promise<sharing.SharedMemory[]> { return sharing.listOrgSharedMemories(this.exec, orgId, limit); }
 
   // ── projects + per-project access (ADR-014 P-E) ──────────────────────────
@@ -420,6 +482,83 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   public listAccessibleProjects(orgId: string, userId: string, isOrgAdmin: boolean): Promise<projects.ProjectRecord[]> { return projects.listAccessibleProjects(this.exec, orgId, userId, isOrgAdmin); }
   public addProjectMember(projectId: string, userId: string, role: string, now: string): Promise<void> { return projects.addProjectMember(this.exec, projectId, userId, role, now); }
   public removeProjectMember(projectId: string, userId: string): Promise<void> { return projects.removeProjectMember(this.exec, projectId, userId); }
+  // Meetings (ADR-018) — index table + revocable public share tokens.
+  public createMeeting(m: meetings.CreateMeetingInput): Promise<void> { return meetings.createMeeting(this.exec, m); }
+  public listMeetings(orgId: string, userId: string, limit?: number): Promise<meetings.MeetingRow[]> { return meetings.listMeetings(this.exec, orgId, userId, limit); }
+  public listMeetingsPage(orgId: string, userId: string, limit?: number, cursor?: meetings.MeetingListCursor): Promise<meetings.MeetingRow[]> { return meetings.listMeetingsPage(this.exec, orgId, userId, limit, cursor); }
+  public getMeeting(orgId: string, userId: string, id: string): Promise<meetings.MeetingRow | null> { return meetings.getMeeting(this.exec, orgId, userId, id); }
+  public getMeetingOverview(orgId: string, userId: string, id: string): Promise<meetings.MeetingRow | null> { return meetings.getMeetingOverview(this.exec, orgId, userId, id); }
+  public getMeetingTranscriptText(orgId: string, userId: string, id: string): Promise<string | null> { return meetings.getMeetingTranscriptText(this.exec, orgId, userId, id); }
+  public insertMeetingTranscriptSegments(meetingId: string, segments: meetings.MeetingTranscriptSegment[]): Promise<void> { return meetings.insertMeetingTranscriptSegments(this.exec, meetingId, segments); }
+  public listMeetingTranscriptSegments(orgId: string, userId: string, id: string, cursor?: number, limit?: number): Promise<meetings.MeetingTranscriptSegment[]> { return meetings.listMeetingTranscriptSegments(this.exec, orgId, userId, id, cursor, limit); }
+  public setMeetingScope(id: string, orgId: string, userId: string, scope: meetings.MeetingScope, teamId: string | null): Promise<boolean> { return meetings.setMeetingScope(this.exec, id, orgId, userId, scope, teamId); }
+  public createMeetingShareToken(s: { token: string; meetingId: string; orgId: string; createdBy: string; expiresAt?: string }): Promise<void> { return meetings.createShareToken(this.exec, s); }
+  public revokeMeetingShareTokens(meetingId: string): Promise<number> { return meetings.revokeShareTokens(this.exec, meetingId); }
+  public getMeetingActiveShareToken(meetingId: string): Promise<{ token: string; expiresAt: string | null } | null> { return meetings.getActiveShareToken(this.exec, meetingId); }
+  public updateMeetingSummary(id: string, userId: string, summaryMarkdown: string, actionItems: meetings.MeetingRow["actionItems"]): Promise<boolean> { return meetings.updateMeetingSummary(this.exec, id, userId, summaryMarkdown, actionItems); }
+  public updateMeetingActionItems(id: string, userId: string, actionItems: meetings.MeetingRow["actionItems"]): Promise<boolean> { return meetings.updateMeetingActionItems(this.exec, id, userId, actionItems); }
+  public setMeetingSummaryStatus(id: string, userId: string, status: meetings.MeetingRow["summaryStatus"], error?: string | null): Promise<boolean> { return meetings.setMeetingSummaryStatus(this.exec, id, userId, status, error); }
+  public setMeetingSummaryRecords(id: string, userId: string, summaryRecordId: string | null, transcriptSourceId: string | null): Promise<boolean> { return meetings.setMeetingSummaryRecords(this.exec, id, userId, summaryRecordId, transcriptSourceId); }
+  public getMeetingByShareToken(token: string): Promise<meetings.MeetingRow | null> { return meetings.getMeetingByShareToken(this.exec, token); }
+
+  // ── Track (migration 034) — org-scoped, collaborative work items ──
+  public createTrackItem(input: track.CreateTrackItemInput): Promise<track.TrackItemRow> { return track.createTrackItem(this.exec, input); }
+  public listTrackItems(orgId: string, opts?: { includeArchived?: boolean; limit?: number }): Promise<track.TrackItemRow[]> { return track.listTrackItems(this.exec, orgId, opts); }
+  public getTrackItem(orgId: string, id: string): Promise<track.TrackItemRow | null> { return track.getTrackItem(this.exec, orgId, id); }
+  public getTrackItemBySourceRef(orgId: string, sourceRef: string): Promise<track.TrackItemRow | null> { return track.getTrackItemBySourceRef(this.exec, orgId, sourceRef); }
+  public transitionTrackItem(orgId: string, id: string, status: string, statusCategory: track.TrackStatusCategory): Promise<track.TrackItemRow | null> { return track.transitionTrackItem(this.exec, orgId, id, status, statusCategory); }
+  public updateTrackItem(orgId: string, id: string, patch: track.UpdateTrackItemPatch): Promise<track.TrackItemRow | null> { return track.updateTrackItem(this.exec, orgId, id, patch); }
+  public deleteTrackItem(orgId: string, id: string): Promise<boolean> { return track.deleteTrackItem(this.exec, orgId, id); }
+
+  // ── Team spaces (migrations 035/037) — organization + personal groups ──
+  public createTeam(input: teams.CreateTeamInput): Promise<teams.TeamRow> { return teams.createTeam(this.exec, input); }
+  public listTeamsForUser(orgId: string, userId: string, includeAllOrgTeams?: boolean): Promise<teams.TeamRow[]> { return teams.listTeamsForUser(this.exec, orgId, userId, includeAllOrgTeams); }
+  public getTeam(orgId: string, id: string): Promise<teams.TeamRow | null> { return teams.getTeam(this.exec, orgId, id); }
+  public isTeamMember(orgId: string, teamId: string, userId: string): Promise<boolean> { return teams.isTeamMember(this.exec, orgId, teamId, userId); }
+  public listTeamMembers(orgId: string, teamId: string, callerUserId: string, canViewAllOrgTeams?: boolean): Promise<teams.TeamMemberRow[]> { return teams.listTeamMembers(this.exec, orgId, teamId, callerUserId, canViewAllOrgTeams); }
+  public insertTeamOwner(teamId: string, userId: string): Promise<boolean> { return teams.insertTeamOwner(this.exec, teamId, userId); }
+  public addTeamMember(orgId: string, teamId: string, userId: string, role: teams.TeamMemberRole | undefined, callerUserId: string, canManageOrgTeams?: boolean): Promise<boolean> { return teams.addTeamMember(this.exec, orgId, teamId, userId, role, callerUserId, canManageOrgTeams); }
+  public removeTeamMember(orgId: string, teamId: string, userId: string, callerUserId: string, canManageOrgTeams?: boolean): Promise<boolean> { return teams.removeTeamMember(this.exec, orgId, teamId, userId, callerUserId, canManageOrgTeams); }
+  public transferPersonalTeamOwnership(teamId: string, fromUserId: string, toUserId: string): Promise<boolean> { return teams.transferPersonalTeamOwnership(this.exec, teamId, fromUserId, toUserId); }
+  public deleteTeam(orgId: string, id: string): Promise<boolean> { return teams.deleteTeam(this.exec, orgId, id); }
+
+  // ── Chat threads (migration 036) — per-user private chat history within an org ──
+  public createChatThread(input: chatThreads.CreateChatThreadInput): Promise<chatThreads.ChatThreadRow> { return chatThreads.createThread(this.exec, input); }
+  public listChatThreads(orgId: string, userId: string, limit?: number): Promise<chatThreads.ChatThreadRow[]> { return chatThreads.listThreads(this.exec, orgId, userId, limit); }
+  public getChatThread(orgId: string, userId: string, id: string): Promise<chatThreads.ChatThreadWithMessages | null> { return chatThreads.getThread(this.exec, orgId, userId, id); }
+  public countChatThreads(orgId: string, userId: string): Promise<number> { return chatThreads.threadCount(this.exec, orgId, userId); }
+  public appendChatMessage(orgId: string, userId: string, threadId: string, msg: chatThreads.AppendChatMessageInput): Promise<chatThreads.ChatMessageRow | null> { return chatThreads.appendMessage(this.exec, orgId, userId, threadId, msg); }
+  public renameChatThread(orgId: string, userId: string, id: string, title: string, model?: string | null): Promise<chatThreads.ChatThreadRow | null> { return chatThreads.renameThread(this.exec, orgId, userId, id, title, model); }
+  public deleteChatThread(orgId: string, userId: string, id: string): Promise<boolean> { return chatThreads.deleteThread(this.exec, orgId, userId, id); }
+  public replaceChatMessages(orgId: string, userId: string, threadId: string, messages: chatThreads.AppendChatMessageInput[]): Promise<chatThreads.ChatThreadWithMessages | null> { return chatThreads.replaceMessages(this.exec, orgId, userId, threadId, messages); }
+  // CVE catalog (spec §10, Task 26) — global world data, no org scoping.
+  public ensureVulnerabilitySource(source: { id: import("../../../vulnerability/types.js").VulnerabilitySourceId; displayName: string; kind: string }): Promise<void> { return vulnerability.ensureVulnerabilitySource(this.exec, source); }
+  public getVulnerabilitySource(id: string) { return vulnerability.getVulnerabilitySource(this.exec, id); }
+  public listVulnerabilitySources() { return vulnerability.listVulnerabilitySources(this.exec); }
+  public listActiveVulnerabilityFeedRuns() { return vulnerability.listActiveVulnerabilityFeedRuns(this.exec); }
+  public startVulnerabilityFeedRun(sourceId: string) { return vulnerability.startVulnerabilityFeedRun(this.exec, sourceId); }
+  public updateVulnerabilityFeedRunProgress(runId: string, progress: { itemsSeen: number; itemsUpserted: number; cursorAfter?: Record<string, unknown> }) { return vulnerability.updateVulnerabilityFeedRunProgress(this.exec, runId, progress); }
+  public finishVulnerabilityFeedRun(runId: string, outcome: Parameters<typeof vulnerability.finishVulnerabilityFeedRun>[2]) { return vulnerability.finishVulnerabilityFeedRun(this.exec, runId, outcome); }
+  public upsertVulnerabilityObservation(observation: import("../../../vulnerability/types.js").VulnerabilityObservation) { return vulnerability.upsertVulnerabilityObservation(this.exec, observation); }
+  public listVulnerabilities(filters: vulnerability.VulnerabilityListFilters) { return vulnerability.listVulnerabilities(this.exec, filters); }
+  public getVulnerability(cveId: string) { return vulnerability.getVulnerability(this.exec, cveId); }
+  public listVulnerabilityRangesForPackage(ecosystem: string, packageName: string) { return vulnerability.listRangesForPackage(this.exec, ecosystem, packageName); }
+  // Org-scoped exposure (spec §10, Tasks 29-31).
+  public createVulnerabilityScan(input: { orgId: string; userId: string; repo: string }) { return vulnScans.createVulnerabilityScan(this.exec, input); }
+  public finishVulnerabilityScan(orgId: string, scanId: string, outcome: Parameters<typeof vulnScans.finishVulnerabilityScan>[3]) { return vulnScans.finishVulnerabilityScan(this.exec, orgId, scanId, outcome); }
+  public getVulnerabilityScan(orgId: string, scanId: string) { return vulnScans.getVulnerabilityScan(this.exec, orgId, scanId); }
+  public listVulnerabilityScans(orgId: string, limit?: number) { return vulnScans.listVulnerabilityScans(this.exec, orgId, limit); }
+  public replaceAssetComponents(orgId: string, repo: string, scanId: string, components: Parameters<typeof vulnScans.replaceAssetComponents>[4]) { return vulnScans.replaceAssetComponents(this.exec, orgId, repo, scanId, components); }
+  public listAssetComponents(filters: Parameters<typeof vulnScans.listAssetComponents>[1]) { return vulnScans.listAssetComponents(this.exec, filters); }
+  public listVulnerabilityMatches(orgId: string, filters?: Parameters<typeof vulnScans.listVulnerabilityMatches>[2]) { return vulnScans.listVulnerabilityMatches(this.exec, orgId, filters); }
+  public upsertVulnerabilityMatch(orgId: string, repo: string, scanId: string, match: import("../../../vulnerability/types.js").VulnerabilityMatch) { return vulnScans.upsertVulnerabilityMatch(this.exec, orgId, repo, scanId, match); }
+  public setVulnerabilityMatchStatus(orgId: string, matchId: string, status: "open" | "dismissed", reason?: string) { return vulnScans.setVulnerabilityMatchStatus(this.exec, orgId, matchId, status, reason); }
+  public upsertVulnerabilityWatch(input: { orgId: string; userId: string; repo: string }) { return vulnScans.upsertVulnerabilityWatch(this.exec, input); }
+  public listVulnerabilityWatches(orgId: string) { return vulnScans.listVulnerabilityWatches(this.exec, orgId); }
+  public listActiveVulnerabilityWatches(limit?: number) { return vulnScans.listActiveVulnerabilityWatches(this.exec, limit); }
+  public finishVulnerabilityWatchRun(watchId: string, outcome: { status: "active" | "error"; error?: string }) { return vulnScans.finishVulnerabilityWatchRun(this.exec, watchId, outcome); }
+  public deleteVulnerabilityWatch(orgId: string, watchId: string) { return vulnScans.deleteVulnerabilityWatch(this.exec, orgId, watchId); }
+  public recordVulnerabilityWatchEvent(event: { watchId: string; matchId: string; transition: string }) { return vulnScans.recordWatchEvent(this.exec, event); }
   public listProjectMembers(projectId: string): Promise<projects.ProjectMemberRecord[]> { return projects.listProjectMembers(this.exec, projectId); }
 
   // ── admin console + audit (ADR-014 P-F) ──────────────────────────────────
@@ -501,6 +640,112 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   }
   public getResolvedProvider(id: string): Promise<ResolvedProviderConfig | null> {
     return providerCfg.getResolvedProvider(this.exec, id);
+  }
+
+  // ── server-managed model policies ─────────────────────────────────────────
+
+  public listProviderModels(orgId: string, enabledOnly = false): Promise<ProviderModelRecord[]> {
+    return modelPolicy.listProviderModels(this.exec, orgId, enabledOnly);
+  }
+  public getProviderModel(orgId: string, id: string): Promise<ProviderModelRecord | null> {
+    return modelPolicy.getProviderModel(this.exec, orgId, id);
+  }
+  public getProviderModelByPublicId(orgId: string, publicModelId: string, enabledOnly = false): Promise<ProviderModelRecord | null> {
+    return modelPolicy.getProviderModelByPublicId(this.exec, orgId, publicModelId, enabledOnly);
+  }
+  public createProviderModel(orgId: string, input: ProviderModelInput): Promise<ProviderModelRecord> {
+    return modelPolicy.createProviderModel(this.exec, orgId, input);
+  }
+  public updateProviderModel(orgId: string, id: string, patch: ProviderModelPatch): Promise<ProviderModelRecord | null> {
+    return modelPolicy.updateProviderModel(this.exec, orgId, id, patch);
+  }
+  public deleteProviderModel(orgId: string, id: string): Promise<boolean> {
+    return modelPolicy.deleteProviderModel(this.exec, orgId, id);
+  }
+  public setDefaultProviderModel(orgId: string, id: string): Promise<boolean> {
+    return modelPolicy.setDefaultProviderModel(this.exec, orgId, id);
+  }
+  public reorderProviderModels(orgId: string, ids: readonly string[]): Promise<void> {
+    return modelPolicy.reorderProviderModels(this.exec, orgId, ids);
+  }
+  public ensureModelGatewayServicePrincipal(orgId: string): Promise<string> {
+    return modelPolicy.ensureModelGatewayServicePrincipal(this.exec, orgId);
+  }
+
+  // ── remote device identities, sessions, grants, and metadata audit ────────
+
+  public createRemoteDevice(orgId: string, userId: string, input: RemoteDeviceInput): Promise<RemoteDeviceRecord> {
+    return remoteAccess.createRemoteDevice(this.exec, orgId, userId, input);
+  }
+  public getRemoteDevice(orgId: string, userId: string, deviceId: string): Promise<RemoteDeviceRecord | null> {
+    return remoteAccess.getRemoteDevice(this.exec, orgId, userId, deviceId);
+  }
+  public getRemoteDeviceByInstallation(orgId: string, userId: string, installationId: string): Promise<RemoteDeviceRecord | null> {
+    return remoteAccess.getRemoteDeviceByInstallation(this.exec, orgId, userId, installationId);
+  }
+  public listRemoteDevices(orgId: string, userId: string, kind?: RemoteDeviceKind): Promise<RemoteDeviceRecord[]> {
+    return remoteAccess.listRemoteDevices(this.exec, orgId, userId, kind);
+  }
+  public touchRemoteDevice(orgId: string, userId: string, deviceId: string, at?: string): Promise<boolean> {
+    return remoteAccess.touchRemoteDevice(this.exec, orgId, userId, deviceId, at);
+  }
+  public revokeRemoteDevice(orgId: string, userId: string, deviceId: string, reasonCode: string, at?: string): Promise<boolean> {
+    return remoteAccess.revokeRemoteDevice(this.exec, orgId, userId, deviceId, reasonCode, at);
+  }
+  public createDeviceSession(orgId: string, userId: string, input: DeviceSessionInput): Promise<DeviceSessionRecord> {
+    return remoteAccess.createDeviceSession(this.exec, orgId, userId, input);
+  }
+  public getDeviceSession(orgId: string, userId: string, sessionId: string): Promise<DeviceSessionRecord | null> {
+    return remoteAccess.getDeviceSession(this.exec, orgId, userId, sessionId);
+  }
+  public getDeviceSessionByTokenHash(orgId: string, userId: string, tokenHash: string): Promise<DeviceSessionRecord | null> {
+    return remoteAccess.getDeviceSessionByTokenHash(this.exec, orgId, userId, tokenHash);
+  }
+  public rotateDeviceSession(orgId: string, userId: string, input: DeviceSessionRotationInput, at?: string): Promise<DeviceSessionRotationResult> {
+    return remoteAccess.rotateDeviceSession(this.exec, orgId, userId, input, at);
+  }
+  public revokeDeviceSessionFamily(orgId: string, userId: string, familyId: string, reasonCode: string, at?: string): Promise<boolean> {
+    return remoteAccess.revokeDeviceSessionFamily(this.exec, orgId, userId, familyId, reasonCode, at);
+  }
+  public createRemoteAccessGrant(orgId: string, userId: string, input: RemoteAccessGrantInput): Promise<RemoteAccessGrantRecord> {
+    return remoteAccess.createRemoteAccessGrant(this.exec, orgId, userId, input);
+  }
+  public getRemoteAccessGrant(orgId: string, userId: string, grantId: string): Promise<RemoteAccessGrantRecord | null> {
+    return remoteAccess.getRemoteAccessGrant(this.exec, orgId, userId, grantId);
+  }
+  public listRemoteAccessGrants(orgId: string, userId: string): Promise<RemoteAccessGrantRecord[]> {
+    return remoteAccess.listRemoteAccessGrants(this.exec, orgId, userId);
+  }
+  public decideRemoteAccessGrant(orgId: string, userId: string, grantId: string, desktopDeviceId: string, decision: RemoteGrantDecision, at?: string): Promise<RemoteAccessGrantRecord | null> {
+    return remoteAccess.decideRemoteAccessGrant(this.exec, orgId, userId, grantId, desktopDeviceId, decision, at);
+  }
+  public revokeRemoteAccessGrant(orgId: string, userId: string, grantId: string, reasonCode: string, at?: string): Promise<boolean> {
+    return remoteAccess.revokeRemoteAccessGrant(this.exec, orgId, userId, grantId, reasonCode, at);
+  }
+  public appendRemoteAccessAudit(orgId: string, userId: string, input: RemoteAccessAuditInput, at?: string): Promise<RemoteAccessAuditRecord> {
+    return remoteAccess.appendRemoteAccessAudit(this.exec, orgId, userId, input, at);
+  }
+  public listRemoteAccessAudit(orgId: string, userId: string, limit?: number): Promise<RemoteAccessAuditRecord[]> {
+    return remoteAccess.listRemoteAccessAudit(this.exec, orgId, userId, limit);
+  }
+
+  public createRemoteEnrollmentChallenge(orgId: string, userId: string, input: RemoteEnrollmentChallengeInput, at?: string): Promise<RemoteEnrollmentChallengeRecord> {
+    return remoteControl.createRemoteEnrollmentChallenge(this.exec, orgId, userId, input, at);
+  }
+  public getRemoteEnrollmentChallenge(orgId: string, userId: string, challengeId: string): Promise<RemoteEnrollmentChallengeRecord | null> {
+    return remoteControl.getRemoteEnrollmentChallenge(this.exec, orgId, userId, challengeId);
+  }
+  public consumeRemoteEnrollmentChallenge(orgId: string, userId: string, challengeId: string, challengeHash: string, at?: string): Promise<boolean> {
+    return remoteControl.consumeRemoteEnrollmentChallenge(this.exec, orgId, userId, challengeId, challengeHash, at);
+  }
+  public createRemoteRelayTicket(orgId: string, userId: string, input: RemoteRelayTicketInput, at?: string): Promise<RemoteRelayTicketRecord> {
+    return remoteControl.createRemoteRelayTicket(this.exec, orgId, userId, input, at);
+  }
+  public consumeRemoteRelayTicket(tokenHash: string, audience: "remote-relay", presentingDeviceId: string, at?: string): Promise<RemoteRelayTicketRecord | null> {
+    return remoteControl.consumeRemoteRelayTicket(this.exec, tokenHash, audience, presentingDeviceId, at);
+  }
+  public revokeRemoteRelayTickets(orgId: string, userId: string, selector: RemoteRelayTicketRevocation, reasonCode: string, at?: string): Promise<number> {
+    return remoteControl.revokeRemoteRelayTickets(this.exec, orgId, userId, selector, reasonCode, at);
   }
 
   // ── integrations (ADR-010 P6: org-scoped GitHub App etc.) ────────────────
@@ -828,6 +1073,18 @@ export class PostgresMemoryStore implements IMemoryStore, TenancyStore, Provider
   /** ADR-017 D5 — recent PR-review jobs for an org's Reviews dashboard (newest-first). */
   public listReviewJobsForOrg(orgId: string, limit?: number): Promise<MemoryJobRecord[]> {
     return job.listReviewJobsForOrg(this.exec, orgId, limit);
+  }
+  public listReviewJobSummariesForOrg(orgId: string, limit?: number): Promise<MemoryJobRecord[]> {
+    return job.listReviewJobSummariesForOrg(this.exec, orgId, limit);
+  }
+  public listReviewAnalyticsForOrg(orgId: string, since: string, limit?: number): Promise<MemoryJobRecord[]> {
+    return job.listReviewAnalyticsForOrg(this.exec, orgId, since, limit);
+  }
+  public listReviewJobsForPr(orgId: string, repo: string, prNumber: number, limit?: number): Promise<MemoryJobRecord[]> {
+    return job.listReviewJobsForPr(this.exec, orgId, repo, prNumber, limit);
+  }
+  public listReviewFindingsForOrg(orgId: string, query?: job.ReviewFindingQuery): Promise<job.ReviewFindingRow[]> {
+    return job.listReviewFindingsForOrg(this.exec, orgId, query);
   }
   public listPentestJobsForOrg(orgId: string, limit?: number): Promise<MemoryJobRecord[]> { return job.listPentestJobsForOrg(this.exec, orgId, limit); }
 

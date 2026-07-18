@@ -9,7 +9,14 @@
 import React, { useState } from 'react';
 import { Icon } from '../icons.js';
 
-export type PanelId = 'context' | 'files' | 'file' | 'editor' | 'diff' | 'terminal' | 'tools' | 'preview' | 'tasks' | 'task-detail' | 'plan' | 'search' | 'schedule' | 'worktrees' | 'review' | 'requirements' | 'annotations' | 'artifacts' | 'attachments' | 'ci' | 'atlas' | 'workflows' | 'memory' | 'prototype' | 'uitest' | 'design-studio';
+export type PanelId = 'context' | 'files' | 'file' | 'editor' | 'diff' | 'terminal' | 'tools' | 'preview' | 'tasks' | 'task-detail' | 'plan' | 'search' | 'schedule' | 'worktrees' | 'review' | 'requirements' | 'annotations' | 'artifacts' | 'attachments' | 'ci' | 'atlas' | 'workflows' | 'memory' | 'prototype' | 'servers' | 'browser' | 'design-studio';
+
+/**
+ * Workspace mode — the left-sidebar switcher, where each entry swaps the whole
+ * main surface. Named rather than repeated inline: it appears in five files,
+ * and every one of them conflicted when two branches each added a mode.
+ */
+export type WorkspaceMode = 'chat' | 'track' | 'code' | 'design' | 'meetings';
 
 export const PANEL_DEFS: Array<{ id: PanelId; title: string; icon: string }> = [
   { id: 'context', title: 'Context', icon: 'layout-right' },
@@ -36,7 +43,10 @@ export const PANEL_DEFS: Array<{ id: PanelId; title: string; icon: string }> = [
   { id: 'workflows', title: 'Workflows', icon: 'bolt' },
   { id: 'memory', title: 'Saved knowledge', icon: 'pin' },
   { id: 'prototype', title: 'Prototype', icon: 'bolt' },
-  { id: 'uitest', title: 'Browser', icon: 'globe' },
+  { id: 'servers', title: 'Servers', icon: 'globe' },
+  // release/0.4.17 renamed this panel's id from 'uitest' to 'browser'; it is
+  // the same BrowserPanel, so the rename is taken rather than kept alongside.
+  { id: 'browser', title: 'Browser', icon: 'globe' },
   { id: 'design-studio', title: 'Design Studio', icon: 'design-studio' },
 ];
 

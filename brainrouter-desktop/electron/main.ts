@@ -12,6 +12,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess, type Utilit
 import { requestDeviceCode, pollOnce, type DeviceCodeGrant } from './githubOauth.js';
 import { getSecret, setSecret, deleteSecret, hasSecret, secretStorageMode } from './secretStore.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAgentCommand } from '@kinqs/brainrouter-agent-protocol';
@@ -36,9 +37,13 @@ import {
 import { isAllowedNavigation, allowedOriginFor } from './windowSecurity.js';
 import { addOpened, noteActivity, reorderWorkspace, type ActivityReason } from './recents.js';
 import { createComputerUsePort } from './computerUse.js';
+import { registerMeetingsBridge } from './meetingsBridge.js';
+import { registerChatSyncBridge } from './chatSyncBridge.js';
 import { checkComputerUsePermissions, openAccessibilitySettings, openScreenRecordingSettings } from './computerUsePermissions.js';
 import { setupTray } from './tray.js';
 import { hardenWebviewPreferences, isAllowedWebviewSrc } from './webviewPolicy.js';
+import { resolveDesktopBootstrapState } from './accountIntegration.js';
+import { initAutoUpdate } from './updater.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +67,17 @@ interface WinPool {
   retiring: Set<string>;               // roots whose host we're intentionally killing
 }
 const wins = new Map<number, WinPool>(); // webContents.id → WinPool
+
+// PERF — preload asks once, synchronously, before React renders. This is a tiny
+// local config read (no network/keychain/host dependency) so the first frame can
+// already show the durable signed-in identity instead of flashing signed-out.
+ipcMain.on('desktop-bootstrap-state', (event) => {
+  if (event.senderFrame !== event.sender.mainFrame) {
+    event.returnValue = null;
+    return;
+  }
+  event.returnValue = resolveDesktopBootstrapState(loadConfig(), os.userInfo().username);
+});
 
 const recentsPath = (): string => path.join(app.getPath('userData'), 'recent-workspaces.json');
 type WorkspaceSessionRow = TranscriptSummary & { lastRole?: string };
@@ -93,21 +109,43 @@ async function handleComputerUseRequest(wp: WinPool, host: UtilityProcess, reque
 
 // ── Connector Phase 2: keychain secrets (host → main) ─────────────────────────
 // safeStorage only exists in the main process; the agent host requests values
-// over its parent port (mirroring the computer-use bridge). Only `get` is
-// exposed to hosts — writes happen exclusively through the OAuth flow below.
+// over its parent port (mirroring the computer-use bridge). Account sign-in is
+// also hosted, so its two bounded account credentials may be set/deleted here.
 
-type SecretRequest = { kind: 'secret-request'; id: string; op: 'get'; key: string };
+type SecretRequest =
+  | { kind: 'secret-request'; id: string; op: 'get'; key: string }
+  | { kind: 'secret-request'; id: string; op: 'set'; key: string; value: string }
+  | { kind: 'secret-request'; id: string; op: 'delete'; key: string };
+
+const HOST_WRITABLE_ACCOUNT_SECRETS = new Set(['account:access-token', 'account:refresh-token']);
 
 function isSecretRequest(value: unknown): value is SecretRequest {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return v.kind === 'secret-request' && typeof v.id === 'string' && v.op === 'get' && typeof v.key === 'string';
+  if (v.kind !== 'secret-request' || typeof v.id !== 'string' || typeof v.key !== 'string') return false;
+  if (v.op === 'get' || v.op === 'delete') return true;
+  return v.op === 'set' && typeof v.value === 'string';
 }
 
 function handleSecretRequest(host: UtilityProcess, request: SecretRequest): void {
   try {
-    const value = getSecret(app.getPath('userData'), request.key);
-    host.postMessage({ kind: 'secret-response', id: request.id, ok: true, value });
+    if (request.op === 'get') {
+      const value = getSecret(app.getPath('userData'), request.key);
+      host.postMessage({ kind: 'secret-response', id: request.id, ok: true, value });
+      return;
+    }
+    if (!HOST_WRITABLE_ACCOUNT_SECRETS.has(request.key)) throw new Error('Host secret write is not allowed for this key.');
+    if (request.op === 'delete') {
+      deleteSecret(app.getPath('userData'), request.key);
+      host.postMessage({ kind: 'secret-response', id: request.id, ok: true });
+      return;
+    }
+    // No hard fail when the OS keychain is unavailable: setSecret already falls
+    // back to a 0600 base64 file (the module's intended behavior — refusing to
+    // store would push the token into plaintext config.json, which is worse). We
+    // surface the mode so the UI can show a non-blocking "not OS-encrypted" note.
+    const { mode } = setSecret(app.getPath('userData'), request.key, request.value);
+    host.postMessage({ kind: 'secret-response', id: request.id, ok: true, mode });
   } catch (err) {
     host.postMessage({ kind: 'secret-response', id: request.id, ok: false, error: err instanceof Error ? err.message : String(err) });
   }
@@ -448,6 +486,17 @@ app.whenReady().then(() => {
     quit: () => app.quit(),
   });
 
+  // DESK-6 — auto-update scaffold. No-op unless this is a PACKAGED build with
+  // BRAINROUTER_UPDATE_CHANNEL set AND electron-updater installed (see updater.ts).
+  // Forwards update lifecycle events to every window on the 'update-event' channel.
+  void initAutoUpdate({
+    emit: (event) => {
+      for (const wp of wins.values()) {
+        if (!wp.win.isDestroyed()) wp.win.webContents.send('update-event', event);
+      }
+    },
+  });
+
   ipcMain.on('agent-command', (event, raw: unknown) => {
     const wp = wins.get(event.sender.id);
     if (!wp || event.senderFrame !== wp.win.webContents.mainFrame) return;
@@ -540,6 +589,8 @@ app.whenReady().then(() => {
     if (typeof dragged !== 'string' || typeof target !== 'string') return { recents: readRecents() };
     return { recents: markWorkspaceReordered(dragged, target) };
   });
+  registerMeetingsBridge();
+  registerChatSyncBridge();
   ipcMain.handle('computerUse:checkPermissions', () => checkComputerUsePermissions());
   ipcMain.handle('computerUse:openAccessibilitySettings', () => openAccessibilitySettings());
   ipcMain.handle('computerUse:openScreenRecordingSettings', () => openScreenRecordingSettings());

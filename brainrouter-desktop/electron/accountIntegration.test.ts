@@ -6,12 +6,16 @@ import {
   createGitlabTrackProxyFetch,
   fetchAccountConnectorStatuses,
   fetchAutomationAccountStatus,
+  fetchAccountModelCatalog,
   fetchGithubAccountStatus,
   resolveBrainRouterAccountApi,
+  resolveBrainRouterAccountBaseUrl,
   resolveBrainRouterAccountContext,
+  resolveDesktopBootstrapState,
   resolveDesktopAccountIdentity,
   startAccountConnectorOAuth,
 } from './accountIntegration.js';
+import { scrubCliSecrets } from './host/helpers.js';
 
 const config = {
   cli: { account: { url: 'https://account.brainrouter.test/' } },
@@ -36,6 +40,40 @@ test('resolveBrainRouterAccountApi returns only the account endpoint and bearer 
   assert.equal(resolveBrainRouterAccountApi({}), null);
 });
 
+test('BrainRouter MCP profiles remain valid account connections without cli.account metadata', () => {
+  const serverOnly = {
+    servers: {
+      local: { identity: 'brainrouter', type: 'http', url: 'http://localhost:3747/mcp/', apiKey: 'legacy-account-key' },
+    },
+  };
+  assert.equal(resolveBrainRouterAccountBaseUrl(serverOnly), 'http://localhost:3747');
+  assert.deepEqual(resolveBrainRouterAccountApi(serverOnly), {
+    baseUrl: 'http://localhost:3747',
+    apiKey: 'legacy-account-key',
+  });
+  assert.equal(resolveBrainRouterAccountBaseUrl({
+    cli: { account: { url: 'https://account.brainrouter.test/tenant/' } },
+    servers: serverOnly.servers,
+  }), 'https://account.brainrouter.test/tenant');
+});
+
+test('renderer config snapshots strip legacy account bearer fields', () => {
+  const cli = scrubCliSecrets({
+    account: {
+      url: 'https://account.brainrouter.test',
+      email: 'member@example.test',
+      jwt: 'secret-jwt',
+      refreshToken: 'secret-refresh',
+      accessToken: 'secret-access',
+      apiKey: 'secret-api-key',
+    },
+  });
+  assert.deepEqual(cli.account, {
+    url: 'https://account.brainrouter.test',
+    email: 'member@example.test',
+  });
+});
+
 test('desktop identity prefers the BrainRouter profile and keeps signed-out use local', () => {
   assert.deepEqual(resolveDesktopAccountIdentity({
     cli: { account: { url: 'https://account.brainrouter.test', displayName: 'Ada Lovelace', email: 'ada@example.test' } },
@@ -54,6 +92,34 @@ test('desktop identity prefers the BrainRouter profile and keeps signed-out use 
   assert.deepEqual(resolveDesktopAccountIdentity({}, 'mac-user'), {
     signedIn: false,
     username: 'mac-user',
+  });
+  assert.deepEqual(resolveDesktopAccountIdentity({
+    servers: { cloud: { identity: 'brainrouter', url: 'https://account.brainrouter.test/mcp', apiKey: 'account-key' } },
+  }, 'mac-user'), {
+    signedIn: true,
+    username: 'mac-user',
+  });
+});
+
+test('desktop bootstrap exposes durable identity immediately without credentials', () => {
+  const state = resolveDesktopBootstrapState({
+    cli: { account: { url: 'https://account.brainrouter.test/', userId: 'user-1', displayName: 'Ada', email: 'ada@example.test' } },
+    servers: { cloud: { identity: 'brainrouter', url: 'https://account.brainrouter.test/mcp', apiKey: 'must-not-cross' } },
+  }, 'mac-user');
+  assert.deepEqual(state, {
+    accountStatus: {
+      signedIn: true,
+      account: {
+        url: 'https://account.brainrouter.test',
+        userId: 'user-1',
+        displayName: 'Ada',
+        email: 'ada@example.test',
+      },
+    },
+  });
+  assert.equal(JSON.stringify(state).includes('must-not-cross'), false);
+  assert.deepEqual(resolveDesktopBootstrapState({}, 'mac-user'), {
+    accountStatus: { signedIn: false, account: null },
   });
 });
 
@@ -234,19 +300,21 @@ test('account connector snapshot is bounded, org-pinned, and strips credential m
         return response(200, { orgs: [{ orgId: 'org-main', name: 'Main org', isDefault: true }] });
       }
       const source = url.includes('/slack/') ? 'slack' : 'gitlab';
+      // Multi-account: the Configured list now enumerates the /accounts route.
       return response(200, {
         source,
-        connected: true,
-        connector: {
+        accounts: [{
           id: `conn-${source}`,
-          name: `${source} account`,
+          label: `${source} account`,
+          connected: true,
           status: 'connected',
           enabled: true,
-          config: { pollMinutes: 15 },
+          account: `${source}-user`,
           lastRunAt: '2026-07-13T00:00:00.000Z',
           lastError: null,
+          authMode: 'web',
           credential: { accessToken: 'must-not-cross' },
-        },
+        }],
       });
     },
   );
@@ -254,6 +322,104 @@ test('account connector snapshot is bounded, org-pinned, and strips credential m
   assert.equal(snapshot.signedIn, true);
   assert.equal(snapshot.orgId, 'org-main');
   assert.deepEqual(snapshot.connectors.map((item) => item.source), ['slack', 'gitlab']);
+  assert.deepEqual(snapshot.connectors.map((item) => item.connector?.id), ['conn-slack', 'conn-gitlab']);
   assert.equal(JSON.stringify(snapshot).includes('must-not-cross'), false);
   assert.deepEqual(calls.map((call) => call.orgId), [undefined, 'org-main', 'org-main']);
+  assert.deepEqual(calls.slice(1).map((call) => call.url.endsWith('/accounts')), [true, true]);
+});
+
+test('account model catalog exposes only safe policy metadata and preserves exact efforts', async () => {
+  const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
+  const catalog = await fetchAccountModelCatalog(
+    { baseUrl: 'https://account.brainrouter.test', apiKey: 'account-key', orgId: 'org-main' },
+    null,
+    async (url, init) => {
+      calls.push({ url, headers: init?.headers });
+      return {
+        ...response(200, {
+          revision: 'catalog:7',
+          models: [{
+            id: 'claude-fable-5',
+            label: 'Claude Fable 5',
+            provider: 'brainrouter',
+            enabled: true,
+            capabilities: { streaming: true, tools: true, responses: true, reasoning: true },
+            reasoning: {
+              default: 'high',
+              allowed: [
+                { id: 'low', label: 'Low' },
+                { id: 'medium', label: 'Medium' },
+                { id: 'high', label: 'High' },
+                { id: 'xhigh', label: 'Extra high' },
+                { id: 'max', label: 'Max' },
+              ],
+              source: 'verified',
+              mode: 'adaptive',
+              manualBudgetTokens: 'unsupported',
+            },
+            provenance: { source: 'verified', sourceUrl: 'https://docs.example/models', verifiedAt: '2026-07-14' },
+            revision: 'model:7',
+            upstreamModelId: 'custody-only-id',
+            endpoint: 'https://upstream.example/v1',
+            apiKey: 'must-not-cross',
+          }],
+        }),
+        headers: { get: (name: string) => name.toLowerCase() === 'etag' ? '"catalog:7"' : null },
+      };
+    },
+  );
+
+  assert.equal(catalog.signedIn, true);
+  assert.equal(catalog.revision, 'catalog:7');
+  assert.equal(catalog.etag, '"catalog:7"');
+  assert.deepEqual(catalog.models[0]?.reasoning?.allowed.map((entry) => entry.id), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.equal(JSON.stringify(catalog).includes('must-not-cross'), false);
+  assert.equal(JSON.stringify(catalog).includes('custody-only-id'), false);
+  assert.equal(JSON.stringify(catalog).includes('upstream.example'), false);
+  assert.deepEqual(calls, [{
+    url: 'https://account.brainrouter.test/api/models/catalog',
+    headers: {
+      Authorization: 'Bearer account-key',
+      'X-BrainRouter-Org': 'org-main',
+    },
+  }]);
+});
+
+test('account model catalog revalidates by ETag and fails closed on unsupported effort aliases', async () => {
+  const previous = await fetchAccountModelCatalog(
+    { baseUrl: 'https://account.brainrouter.test', apiKey: 'account-key', orgId: 'org-main' },
+    null,
+    async () => ({
+      ...response(200, { revision: 'catalog:1', models: [] }),
+      headers: { get: () => '"catalog:1"' },
+    }),
+  );
+  let ifNoneMatch = '';
+  const cached = await fetchAccountModelCatalog(
+    { baseUrl: 'https://account.brainrouter.test', apiKey: 'account-key', orgId: 'org-main' },
+    previous,
+    async (_url, init) => {
+      ifNoneMatch = init?.headers?.['If-None-Match'] ?? '';
+      return { ...response(304, null), headers: { get: () => null } };
+    },
+  );
+  assert.equal(ifNoneMatch, '"catalog:1"');
+  assert.equal(cached.revision, 'catalog:1');
+  assert.equal(cached.stale, false);
+
+  const invalid = await fetchAccountModelCatalog(
+    { baseUrl: 'https://account.brainrouter.test', apiKey: 'account-key', orgId: 'org-main' },
+    null,
+    async () => response(200, {
+      revision: 'catalog:bad',
+      models: [{
+        id: 'bad', label: 'Bad', provider: 'brainrouter', enabled: true,
+        capabilities: { streaming: true, tools: true, responses: true, reasoning: true },
+        reasoning: { default: 'ultracode', allowed: [{ id: 'ultracode', label: 'Ultracode' }], source: 'manual', mode: 'selectable' },
+        provenance: { source: 'manual' }, revision: 'bad',
+      }],
+    }),
+  );
+  assert.equal(invalid.models.length, 0);
+  assert.match(invalid.error ?? '', /unsupported effort/i);
 });

@@ -13,6 +13,7 @@ import { FlowCanvas } from "./canvas/FlowCanvas";
 import { DesignWorkspace } from "./design/DesignWorkspace";
 import { DESIGN_FLOWS } from "./studioFixtures";
 import type { FlowPosition, StudioTab } from "./studioTypes";
+import { InlineLoading } from "../../components/LoadingSpinner";
 
 const MODES: [Mode, string][] = [["canvas", "Poster studio"], ["avatar", "Avatar / PFP"], ["logo", "Logo"]];
 const POSITIONS_STORAGE_KEY = "brainrouter.design-studio.positions";
@@ -48,7 +49,9 @@ export default function BrandStudioPage() {
   const svg = useMemo(() => buildSVG(cfg), [cfg]);
   const { downloadSVG, downloadPNG, copySVG, busy, copied } = useBrandExport(cfg);
 
-  if (isLoading) return <div style={{ padding: "48px", color: "var(--text-muted)" }}>Loading…</div>;
+  if (isLoading) {
+    return <div style={{ padding: "48px" }}><InlineLoading label="Loading…" /></div>;
+  }
   if (!user || !user.isAdmin) return null;
 
   const { w, h } = dimsFor(cfg);

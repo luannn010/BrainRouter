@@ -13,7 +13,7 @@ import { detectOS, captureCombo } from '../../lib/shortcuts/shortcuts.js';
 import { saveExpandedProjects } from '../../lib/session/workspaces/expandedProjectsStore.js';
 import { GIT_VISIBLE_POLL_MS, gitPollRefreshDue, gitRefreshDue } from '../../lib/git/gitFreshness.js';
 import type { WorkspaceDash } from '../../lib/workspace/dashboard.js';
-import type { PanelId } from '../../panels/index.js';
+import type { PanelId, WorkspaceMode } from '../../panels/index.js';
 import type { SessionRow, TaskViewState, WorkflowDetail } from '../../types.js';
 import type { ProjectSessionsByRoot } from '../../lib/session/workspaces/projectSessionsView.js';
 import type { SettingsSection } from '../../lib/commands/commands.js';
@@ -23,7 +23,7 @@ type Query = (id: string, name: string, args?: Record<string, unknown>) => void;
 export interface AppEffectsCtx {
   q: Query;
   settingsOpen: boolean;
-  mode: 'chat' | 'track' | 'code' | 'design';
+  mode: WorkspaceMode;
   info: { workspaceRoot?: string; sessionKey?: string };
   hostUp: boolean;
   refreshGit: () => void;
@@ -52,6 +52,7 @@ export interface AppEffectsCtx {
   setWorkW: (w: number) => void;
   setPaletteOpen: React.Dispatch<React.SetStateAction<boolean>>;
   togglePanel: (id: PanelId) => void;
+  ensurePanel: (id: PanelId) => void;
   setSideFullScreen: React.Dispatch<React.SetStateAction<boolean>>;
   setSidePanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setTermDockOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -73,17 +74,67 @@ export function useAppEffects(ctx: AppEffectsCtx): void {
     q, settingsOpen, mode, info, hostUp, refreshGit, editorAnyDirty, running, lastPlan, activeSideTab,
     setGlobalBoards, setWorkspaces, setProjSessions, taskView, workflowView, cardOpenRef, setTaskView,
     setWorkflowView, viewKey, chatWidth, chatSize, toast, setToast, envOpen, railWidth, railOpen,
-    expandedProjects, workrowRef, setWorkW, setPaletteOpen, togglePanel, setSideFullScreen, setSidePanelOpen,
+    expandedProjects, workrowRef, setWorkW, setPaletteOpen, togglePanel, ensurePanel, setSideFullScreen, setSidePanelOpen,
     setTermDockOpen, openSettings, sessionsRef, resumeSessionRef, zoomIn, zoomOut, resetZoom, sidePanelOpen,
     sidePinned, codeFont, theme, accent,
   } = ctx;
 
-  // Fetch the tool enable/disable catalog (built-in + connected MCP tools) when
-  // Settings opens, so the Tools section can render a toggle per tool.
+  // F1 — pop the Artifacts panel open when the agent writes an artifact (like
+  // Claude popping the artifact into view). Throttled so a burst of writes in one
+  // turn opens the panel once rather than repeatedly yanking focus; the panel's
+  // own br-artifact-focus listener keeps selecting the latest artifact. Kept in a
+  // ref so the listener subscribes once (ensurePanel is re-created each render).
+  const ensurePanelRef = useRef(ensurePanel);
+  ensurePanelRef.current = ensurePanel;
+  const lastArtifactOpenRef = useRef(0);
   useEffect(() => {
-    if (settingsOpen) q('q-toolcat', 'tool-catalog');
+    const onWritten = (): void => {
+      const now = Date.now();
+      if (now - lastArtifactOpenRef.current < 1500) return; // one open per burst
+      lastArtifactOpenRef.current = now;
+      ensurePanelRef.current('artifacts');
+    };
+    window.addEventListener('br-artifact-written', onWritten);
+    return () => window.removeEventListener('br-artifact-written', onWritten);
+  }, []);
+
+  // Warm settings data once the host is available. Opening Settings only reveals
+  // already-rendered state; it never has to begin these reads on the click path.
+  useEffect(() => {
+    if (!hostUp) return;
+    q('q-toolcat', 'tool-catalog');
+    q('q-usage', 'usage-breakdown');
+    q('q-usage-hist', 'usage-history', { days: 365 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen]);
+  }, [hostUp]);
+
+  // Revalidate local config after the modal is visible, without clearing the
+  // cached snapshot or delaying the opening frame.
+  useEffect(() => {
+    if (!settingsOpen || !hostUp) return;
+    const timer = window.setTimeout(() => q('q-snapshot', 'config-snapshot'), 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, hostUp]);
+
+  // Account-managed models use normal ETag revalidation so policy changes land
+  // without restarting the desktop app. Only the renderer-safe catalog crosses
+  // the bridge; the bearer remains in Electron main/host storage.
+  useEffect(() => {
+    if (!hostUp) return;
+    const refresh = (): void => {
+      q('q-account-models', 'account-model-catalog');
+      q('q-info', 'session-info');
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener('br-account-changed', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('br-account-changed', refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostUp]);
 
   // Track mode — fetch the project + work items on entering Track or switching
   // workspace; mutations return the updated list (handled in useAgentEvents).

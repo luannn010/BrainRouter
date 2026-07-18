@@ -1,15 +1,100 @@
-/**
- * Provider/LLM-Gateway HTTP surface (ADR-010 P7). A tiny Express app other
- * services call to resolve their org's provider config. Service-to-service auth
- * reuses the brain's JWT (same BRAINROUTER_JWT_SECRET), so no new trust root.
- */
+/** Hosted model-gateway HTTP boundary. Upstream credentials never cross it. */
+import { randomUUID } from "node:crypto";
 import express, { type Request, type Response, type NextFunction } from "express";
-import { verifyJwt } from "../../api/auth/crypto.js";
-import { isProviderKind } from "../../providers/types.js";
-import type { GatewayProviderService } from "./providerPool.js";
+import { GatewayAuthError, type GatewayAuthContext } from "./auth.js";
+import {
+  registerGatewayDataPlane,
+  sendOpenAiError,
+  type GatewayDataPlaneOptions,
+  type GatewayDataPlaneService,
+} from "./chatRoutes.js";
+import { registerGatewayAudioPlane } from "./audioRoutes.js";
 
-export function createGatewayApp(svc: GatewayProviderService, jwtSecret: string) {
+export interface GatewayHttpService extends GatewayDataPlaneService {
+  ping(): Promise<boolean>;
+  authenticate(bearer: string, requestedOrgId?: string): Promise<GatewayAuthContext>;
+}
+
+export interface GatewayAppOptions extends GatewayDataPlaneOptions {
+  requestId?: () => string;
+}
+
+function generatedRequestId(): string {
+  return `req_${randomUUID().replace(/-/g, "")}`;
+}
+
+function bearer(req: Request): string {
+  const value = req.headers.authorization;
+  return value?.startsWith("Bearer ") ? value.slice(7).trim() : "";
+}
+
+/** Stamp a validated x-request-id (shared by the standalone app and the mount). */
+function requestIdMiddleware(options: GatewayAppOptions) {
+  return (_req: Request, res: Response, next: NextFunction) => {
+    const candidate = options.requestId?.() ?? generatedRequestId();
+    const id = /^req_[A-Za-z0-9_-]{1,100}$/.test(candidate) ? candidate : generatedRequestId();
+    res.locals.requestId = id;
+    res.setHeader("x-request-id", id);
+    next();
+  };
+}
+
+/**
+ * Derive identity + tenant scope onto res.locals.gatewayAuth. A body orgId is
+ * never observed; an optional X-BrainRouter-Org header selects among current
+ * memberships. Gateway auth is DISTINCT from the brain's /api JWT: it accepts a
+ * `br_` API key or a JWT with aud=brainrouter-model-gateway + scope models:invoke.
+ */
+function gatewayAuthMiddleware(svc: Pick<GatewayHttpService, "authenticate">) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const requested = req.headers["x-brainrouter-org"];
+    try {
+      res.locals.gatewayAuth = await svc.authenticate(
+        bearer(req),
+        typeof requested === "string" ? requested : undefined,
+      );
+      next();
+    } catch (error) {
+      if (error instanceof GatewayAuthError) {
+        sendOpenAiError(res, error.status, {
+          message: error.message,
+          type: "authentication_error",
+          param: null,
+          code: error.code,
+        });
+        return;
+      }
+      sendOpenAiError(res, 401, {
+        message: "The access credential is not valid.",
+        type: "authentication_error",
+        param: null,
+        code: "invalid_credential",
+      });
+    }
+  };
+}
+
+/**
+ * Mount the OpenAI-compatible /v1 data-plane onto an EXISTING Express app — the
+ * brain on :3747 — so a SINGLE port fronts the model gateway (only :3747 needs
+ * exposing/port-forwarding). Everything is scoped under /v1 so it never touches
+ * the brain's /api or /mcp planes; the brain's global express.json already parsed
+ * the body, so we add only request-id + the gateway auth context. The standalone
+ * :3748 process (createGatewayApp) is intentionally left byte-identical.
+ */
+export function mountGatewayDataPlane(
+  app: import("express").Express,
+  svc: GatewayHttpService,
+  options: GatewayAppOptions = {},
+): void {
+  app.use("/v1", requestIdMiddleware(options), gatewayAuthMiddleware(svc));
+  registerGatewayDataPlane(app, svc, options);
+  registerGatewayAudioPlane(app, svc);
+}
+
+export function createGatewayApp(svc: GatewayHttpService, options: GatewayAppOptions = {}) {
   const app = express();
+  app.use(requestIdMiddleware(options));
   app.use(express.json({ limit: "256kb" }));
 
   // Health is unauthenticated (liveness/readiness probes).
@@ -18,31 +103,55 @@ export function createGatewayApp(svc: GatewayProviderService, jwtSecret: string)
     res.json({ status: db ? "ok" : "degraded", service: "provider-gateway", db });
   });
 
-  // Everything else needs a valid JWT (the same one the brain issues).
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const h = req.headers.authorization;
-    const token = h?.startsWith("Bearer ") ? h.slice(7).trim() : "";
-    const payload = token.split(".").length === 3 ? verifyJwt(token, jwtSecret) : null;
-    if (!payload) { res.status(401).json({ error: "gateway: a valid JWT is required", code: "unauthorized" }); return; }
-    next();
+  // All data-plane routes derive identity and tenant scope here.
+  app.use(gatewayAuthMiddleware(svc));
+
+  registerGatewayDataPlane(app, svc, options);
+  registerGatewayAudioPlane(app, svc);
+
+  // /v1/resolve intentionally no longer exists. Data-plane routes consume
+  // res.locals.gatewayAuth and keep decrypted upstream custody in-process.
+  app.use((_req: Request, res: Response) => {
+    sendOpenAiError(res, 404, {
+      message: "Unknown route.",
+      type: "not_found_error",
+      param: null,
+      code: null,
+    });
   });
 
-  // POST /v1/resolve { orgId, kind } → the org's DB-resolved provider (DB-first,
-  // env fallback). Returns the decrypted key over this INTERNAL authed channel.
-  app.post("/v1/resolve", async (req: Request, res: Response) => {
-    const orgId = String(req.body?.orgId ?? "").trim();
-    const kind = String(req.body?.kind ?? "").trim();
-    if (!orgId || !isProviderKind(kind)) {
-      res.status(400).json({ error: "orgId and a valid kind (llm|embedding|reranker|judge) are required", code: "invalid_request" });
+  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      next(error);
       return;
     }
-    try {
-      const provider = await svc.resolve(orgId, kind);
-      if (!provider) { res.status(404).json({ error: "no provider configured for that org/kind", code: "not_found" }); return; }
-      res.json({ provider });
-    } catch (e) {
-      res.status(500).json({ error: e instanceof Error ? e.message : "resolve failed", code: "internal_error" });
+    const kind = typeof error === "object" && error !== null && "type" in error
+      ? String((error as { type?: unknown }).type ?? "")
+      : "";
+    if (kind === "entity.too.large") {
+      sendOpenAiError(res, 413, {
+        message: "The request body is too large.",
+        type: "invalid_request_error",
+        param: null,
+        code: "request_too_large",
+      });
+      return;
     }
+    if (error instanceof SyntaxError) {
+      sendOpenAiError(res, 400, {
+        message: "The request body is not valid JSON.",
+        type: "invalid_request_error",
+        param: null,
+        code: "invalid_json",
+      });
+      return;
+    }
+    sendOpenAiError(res, 500, {
+      message: "BrainRouter could not complete the request.",
+      type: "api_error",
+      param: null,
+      code: "internal_error",
+    });
   });
 
   return app;

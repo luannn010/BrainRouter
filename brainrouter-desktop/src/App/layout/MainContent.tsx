@@ -8,13 +8,15 @@
 import React, { lazy, Suspense } from 'react';
 import { Icon } from '../../icons.js';
 import { TrackView } from '../../track/TrackView.js';
+import { MeetingsView } from '../../components/meetings/MeetingsView.js';
+import { createMeetingsOps } from '../../components/meetings/meetingsOps.js';
 import { ChatThread } from '../../components/chat/ChatThread.js';
 import { Composer } from '../../components/chat/Composer.js';
 import { EnvironmentPanel } from '../../components/layout/EnvironmentPanel.js';
 import { ViewsRail } from '../../components/layout/ViewsRail.js';
 import { TerminalDock } from '../../components/layout/TerminalDock.js';
 import { TopbarRight } from '../../components/layout/TopbarRight.js';
-import type { PanelId } from '../../panels/index.js';
+import type { PanelId, WorkspaceMode } from '../../panels/index.js';
 import type { AttachmentUpload, FleetRow } from '../../types.js';
 import type { useCi } from '../../lib/ci/useCi.js';
 
@@ -31,8 +33,8 @@ type TR = React.ComponentProps<typeof TopbarRight>;
 type TV = React.ComponentProps<typeof TrackView>;
 
 export interface MainContentProps {
-  mode: 'chat' | 'track' | 'code' | 'design';
-  setMode: (m: 'chat' | 'track' | 'code' | 'design') => void;
+  mode: WorkspaceMode;
+  setMode: (m: WorkspaceMode) => void;
   workrowRef: React.RefObject<HTMLDivElement>;
   // Track view
   track: { project: TV['project']; items: TV['items']; sprints: TV['sprints']; modules: TV['modules']; views: TV['views']; automations: TV['automations']; members: TV['members']; sync: TV['sync']; git: TV['git']; pr: TV['pr'] };
@@ -69,6 +71,7 @@ export interface MainContentProps {
   artifacts: VR['artifacts'];
   ci: ReturnType<typeof useCi>;
   envRoom: boolean;
+  envDrawer: boolean;
   // ChatThread
   homeMode: CT['homeMode'];
   gitInfo: CT['gitInfo'];
@@ -181,7 +184,7 @@ export function MainContent(p: MainContentProps): React.ReactElement {
     mode, setMode, workrowRef, track, trackOps, railOpen, setRailOpen, sidePanelOpen, sidePinned, sideFullScreen,
     setSidePanelOpen, setSidePinned, sideAnim, sideWidth, setSideWidth, activeSideTab, sideTabs, setActiveSideTab,
     closeSideTab, reorderSideTab, tabTitle, renderPanelBody, openSideView, lastPlan, changedFiles, backgroundTasks,
-    fleet, toolLog, schedules, worktrees, review, requirements, annotations, artifacts, ci, envRoom, homeMode,
+    fleet, toolLog, schedules, worktrees, review, requirements, annotations, artifacts, ci, envRoom, envDrawer, homeMode,
     gitInfo, info, sessionTitle, taskView, setTaskView, chatRef, atBottomRef, setAtBottom, workflowView,
     setWorkflowView, renderRow, homeStats, statsTab, setStatsTab, statsRange, setStatsRange, snapshot, sessions,
     viewKey, renameCurrentSession, resumeSession, forkParent, transcriptEls, liveText, goalState, runBridge, q,
@@ -208,6 +211,8 @@ export function MainContent(p: MainContentProps): React.ReactElement {
     setMode('code');
     ensurePanel(id);
   }, [ensurePanel, setMode]);
+  // Meetings mode (ADR-018) — data flows through the injected ops bridge.
+  const meetingsOps = React.useMemo(() => createMeetingsOps(), []);
 
   return (
     <div className="main">
@@ -231,6 +236,10 @@ export function MainContent(p: MainContentProps): React.ReactElement {
             backgroundTasks={backgroundTasks} fleet={fleet} toolLog={toolLog} schedules={schedules}
             worktrees={worktrees} review={review} requirements={requirements} annotations={annotations} artifacts={artifacts} ci={ci}
             envRoom={false} />
+        </div>
+      ) : mode === 'meetings' ? (
+        <div className="workrow" ref={workrowRef}>
+          <MeetingsView ops={meetingsOps} />
         </div>
       ) : mode === 'track' ? (
         <div className="workrow track-workrow" ref={workrowRef}>
@@ -285,6 +294,7 @@ export function MainContent(p: MainContentProps): React.ReactElement {
               modeLabel={modeLabel} effort={effort} info={info} branches={branches}
               endpointModels={endpointModels} allowedModels={defaultProviderModels} routerCatalog={routerCatalog} routerFallback={routerFallback} modelsLoading={modelsLoading} setModelsLoading={setModelsLoading}
               connectedProviders={snapshot?.providers ?? []} defaultProviderName={snapshot?.defaultProviderName ?? null}
+              accountModels={snapshot?.accountModels}
               modelChoices={modelChoices} modelScope={modelScope} setModelScope={setModelScope}
               hasConversation={hasConversation} contextUsage={contextUsage} tokens={tokens} openSettings={openSettings}
               onAttach={attachFiles}
@@ -304,11 +314,15 @@ export function MainContent(p: MainContentProps): React.ReactElement {
         {/* Chat mode is a FOCUSED conversation — the code workbench (Environment
             column, side panels, terminal) appears only in Code mode. */}
         {mode === 'code' ? (<>
-        {/* DESK-5h — Environment as a LAYOUT COLUMN: the chat reflows next
-            to it; it can never cover content. Yields via envRoom. */}
+        {envDrawer && envAnim.mounted ? (
+          <button type="button" className="env-scrim" aria-label="Close Environment" onClick={() => setEnvOpen(false)} />
+        ) : null}
+        {/* Environment is a layout column when room exists and an explicit,
+            dismissible drawer when zoom reduces the effective viewport. */}
         <EnvironmentPanel envAnim={envAnim} openSettings={openSettings} gitInfo={gitInfo} ensurePanel={ensurePanel}
           setTermDockOpen={setTermDockOpen} branches={branches} pop={pop} setPop={setPop} q={q} commitSubjects={commitSubjects} ci={ci}
-          openCiPanel={openCiPanel} lastTurnFails={lastTurnFails} backgroundTasks={backgroundTasks} openTask={openTask} />
+          openCiPanel={openCiPanel} lastTurnFails={lastTurnFails} backgroundTasks={backgroundTasks} openTask={openTask}
+          drawer={envDrawer} onClose={() => setEnvOpen(false)} />
 
         {/* §panel-drawer — scrim over the chat when the panel is an unpinned
             drawer; clicking it (i.e. clicking outside the panel) closes it. */}

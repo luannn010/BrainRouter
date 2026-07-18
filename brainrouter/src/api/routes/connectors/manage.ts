@@ -16,11 +16,9 @@ import { gitlabTrackProxyTarget } from "../../../connectors/gitlabTrackProxy.js"
 
 export const connectorManageRouter = Router();
 connectorManageRouter.use(requireAnyAuth);
-// Connector credentials control what external data enters an organization.  Keep
-// this surface aligned with the OAuth-app configuration endpoints: a valid JWT
-// alone is not sufficient; the active org role must be allowed to manage
-// triggers/integrations.
-connectorManageRouter.use(requirePermission("triggers:manage"));
+// Connector accounts are per-user. Developers may connect and sync their own
+// sources, while shared OAuth-app credentials remain behind triggers:manage.
+connectorManageRouter.use(requirePermission("connectors:manage"));
 
 function activeOrgId(req: AuthedRequest): string {
   // `requirePermission` immediately above resolves and attaches this value. Keep
@@ -30,12 +28,17 @@ function activeOrgId(req: AuthedRequest): string {
   return req.orgId;
 }
 
-async function sourceConnector(req: AuthedRequest, res: Response) {
+async function sourceConnector(req: AuthedRequest, res: Response, connectorId?: string) {
   const source = String(req.params.source ?? "").trim();
   if (!isOAuthSource(source)) { res.status(404).json({ error: "Unknown OAuth connector source" }); return null; }
   const orgId = activeOrgId(req);
-  const candidates = (await memoryEngine.connectors.listConnectors(req.userId!)).filter((item) => item.source === source);
-  const connector = candidates.find((item) => item.orgId === orgId);
+  const candidates = (await memoryEngine.connectors.listConnectors(req.userId!))
+    .filter((item) => item.source === source && item.orgId === orgId);
+  // Multi-account: an explicit connectorId picks a SPECIFIC account (implicitly
+  // ownership-checked — `candidates` is already scoped to the caller + source +
+  // org). Without one we fall back to the first account (single-account callers).
+  const connector = connectorId ? candidates.find((item) => item.id === connectorId) : candidates[0];
+  if (connectorId && !connector) { res.status(404).json({ error: "Connector not found" }); return null; }
   return { source, connector, orgId };
 }
 
@@ -68,11 +71,49 @@ connectorManageRouter.get("/:source/status", async (req: AuthedRequest, res) => 
   res.json({ source: found.source, connected: !!c?.hasCredential, connector: c ?? null, account, scopes: resolved?.credential?.scope ?? null });
 });
 
+/** GET /api/connectors/:source/accounts — EVERY account the caller has connected
+ * for this source in the active org (multi-account: work + personal + …). Each
+ * connector IS one external account; credentials stay server-only, so this
+ * returns only the label, connected state, and the discovered account identity. */
+connectorManageRouter.get("/:source/accounts", async (req: AuthedRequest, res) => {
+  const source = String(req.params.source ?? "").trim();
+  if (!isOAuthSource(source)) { res.status(404).json({ error: "Unknown OAuth connector source" }); return; }
+  const orgId = activeOrgId(req);
+  const connectors = (await memoryEngine.connectors.listConnectors(req.userId!))
+    .filter((item) => item.source === source && item.orgId === orgId);
+  const accounts = await Promise.all(connectors.map(async (c) => {
+    const resolved = c.hasCredential ? await memoryEngine.connectors.getResolvedConnector(c.id) : null;
+    const account = resolved ? await discoverConnectorAccount(resolved).catch(() => null) : null;
+    return {
+      id: c.id, label: c.name, connected: !!c.hasCredential, status: c.status,
+      account, enabled: c.enabled, lastRunAt: c.lastRunAt, lastError: c.lastError,
+      authMode: (c.config?.authMode as string | undefined) ?? undefined,
+    };
+  }));
+  res.json({ source, accounts });
+});
+
+/** POST /api/connectors/:source/accounts — start a NEW account for this source.
+ * Creates an empty connector the OAuth/device flow then binds a credential to,
+ * so a user can add a second (work/personal) account without touching the first. */
+connectorManageRouter.post("/:source/accounts", async (req: AuthedRequest, res) => {
+  const source = String(req.params.source ?? "").trim();
+  if (!isOAuthSource(source)) { res.status(404).json({ error: "Unknown OAuth connector source" }); return; }
+  const label = typeof req.body?.label === "string" && req.body.label.trim() ? req.body.label.trim().slice(0, 80) : source;
+  const connector = await memoryEngine.connectors.createConnector(req.userId!, {
+    source,
+    name: label,
+    orgId: activeOrgId(req),
+    visibility: "private",
+  });
+  res.status(201).json({ connector });
+});
+
 /** GET /api/connectors/:source/resources — selection state safe for a browser UI.
  * Source runtimes persist their selected repositories/projects/channels in config;
  * the endpoint never attempts to expose an OAuth token to enumerate them client-side. */
 connectorManageRouter.get("/:source/resources", async (req: AuthedRequest, res) => {
-  const found = await sourceConnector(req, res);
+  const found = await sourceConnector(req, res, String(req.query.connectorId ?? "").trim() || undefined);
   if (!found) return;
   if (!found.connector?.hasCredential) { res.json({ source: found.source, connected: false, resources: [] }); return; }
   const resolved = await memoryEngine.connectors.getResolvedConnector(found.connector.id);
@@ -83,7 +124,7 @@ connectorManageRouter.get("/:source/resources", async (req: AuthedRequest, res) 
 /** PUT /api/connectors/:source/resources — persist the source-specific selection
  * while retaining all unrelated sync configuration. */
 connectorManageRouter.put("/:source/resources", async (req: AuthedRequest, res) => {
-  const found = await sourceConnector(req, res);
+  const found = await sourceConnector(req, res, typeof req.body?.connectorId === "string" && req.body.connectorId.trim() ? req.body.connectorId.trim() : undefined);
   if (!found?.connector) { res.status(404).json({ error: 'Connector not found' }); return; }
   const field = CONNECTOR_RESOURCE_FIELDS[found.source];
   if (!field) { res.status(400).json({ error: `${found.source} does not expose a selectable resource filter` }); return; }
