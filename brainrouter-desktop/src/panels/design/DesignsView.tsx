@@ -16,6 +16,7 @@ import { QuickComponentChat } from './QuickComponentChat.js';
 import { isEditableTarget, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
 import { fitBounds, panBy, screenToWorld, snapTo, wheelGesture, zoomAt, type ViewBounds, type Viewport } from '../../lib/design/canvasViewport.js';
 import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, toggleSelection, type SelectableItem, type Selection } from '../../lib/design/designSelection.js';
+import { MIN_SCREEN, isResizeHandle, resizeRect } from '../../lib/design/screenResize.js';
 import { useCanvasDocument } from '../../lib/design/useCanvasDocument.js';
 import { useCanvasFrames } from '../../lib/design/useCanvasFrames.js';
 import type { CanvasNode } from '../../lib/design/canvasModel.js';
@@ -372,7 +373,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       return;
     }
 
-    const screenEl = target.closest<HTMLElement>('.ds-screen, .ds-live-screen');
+    const screenEl = target.closest<HTMLElement>('.ds-screen, .ds-live-screen, .ds-screen-head, .ds-screen-resize');
     const id = screenEl?.dataset.screenId ?? '';
     if (screenEl && id) {
       const node = nodes.find((item) => item.prototypeId === id);
@@ -381,7 +382,41 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         : (isSelected(selection, 'screen', id) ? selection : selectOnly({ kind: 'screen', id }));
       setSelection(next);
       if (id !== protos.selected?.id) protos.select(id);
-      if (!node || node.locked || !target.closest('.ds-screen-head')) return;
+      if (!node || node.locked) return;
+
+      // Resize: a handle names the edges it moves. Checked before the drag
+      // branch because handles sit on top of the frame they belong to.
+      const handleName = target.closest<HTMLElement>('.ds-screen-resize')?.dataset.resize ?? '';
+      if (isResizeHandle(handleName)) {
+        const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
+        const startBox = { x: node.position.x, y: node.position.y, w: node.width, h: node.height };
+        const from = { x: e.clientX, y: e.clientY, scale: viewRef.current.scale };
+        let latest = nodes;
+        const onMove = (ev: PointerEvent): void => {
+          const box = resizeRect(startBox, handleName, (ev.clientX - from.x) / from.scale, (ev.clientY - from.y) / from.scale, { grid, min: MIN_SCREEN });
+          latest = nodes.map((item) => item.prototypeId === id
+            ? { ...item, position: { x: box.x, y: box.y }, width: box.w, height: box.h }
+            : item);
+          setDragNodes(latest);
+        };
+        const onUp = (): void => {
+          setDragNodes(null);
+          saveNodes(latest);
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        e.preventDefault();
+        return;
+      }
+
+      // Drag: the header always drags. The BODY drags too, except on the live
+      // screen, whose body is the running prototype and has to stay clickable —
+      // that one is what its header is for.
+      const onHeader = Boolean(target.closest('.ds-screen-head'));
+      const onLiveBody = Boolean(target.closest('.ds-live-screen'));
+      if (!onHeader && onLiveBody) return;
 
       const moving = new Set(idsOfKind(next, 'screen'));
       moving.add(id);
@@ -593,7 +628,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
             title={titleById.get(node.prototypeId) ?? node.prototypeId}
             content={contentById.get(node.prototypeId) ?? null}
             active={node.prototypeId === protos.selected?.id}
-            selected={isSelected(selection, 'screen', node.prototypeId)} />)}
+            selected={isSelected(selection, 'screen', node.prototypeId)}
+            scale={view.scale} />)}
           {activeNode ? <div className={`ds-live-screen${isSelected(selection, 'screen', activeNode.prototypeId) ? ' is-selected' : ''}`} data-screen-id={activeNode.prototypeId}
             style={{ left: activeNode.position.x, top: activeNode.position.y, width: activeNode.width, height: activeNode.height, zIndex: LIVE_LAYER_Z }}>
             <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}

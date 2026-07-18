@@ -67,11 +67,17 @@ The center stage is a **world canvas**: a fixed viewport (`overflow:hidden`) con
 | Hand tool drag, Space+drag, middle-drag | Pan |
 | Ctrl/Cmd + wheel | Zoom toward the cursor |
 | Wheel | Pan; Shift+wheel pans sideways |
-| Drag a screen's title bar | Move it, snapped to the grid; the whole selection moves together |
+| Drag a screen's body | Move it, snapped to the grid — on every screen except the live one |
+| Drag a screen's title bar | Move it, on any screen including the live one |
+| Drag a resize handle | Resize the selected screen; the opposite edges stay pinned |
 | Drag empty canvas (select tool) | Rubber-band selection |
 | `0` | Fit the selection, or the whole board |
 
-The screen **body** is never a drag handle — only its title bar is — so the live prototype stays clickable and drivable, as it was before the canvas existed.
+**Which parts of a screen you can grab** depends on whether it is the live one. A non-live screen is a picture — its snapshot iframe is `pointer-events:none`, so its whole body drags, exactly like the Canvas tab. The live screen's body is the running prototype and has to stay clickable, so that one moves by its title bar. Clicking a screen makes it live, so the first drag of a screen comes from its body and later ones from its title bar.
+
+Screen **chrome is counter-scaled** by the canvas zoom: the title bar holds 22px and the resize handles 10px on screen whether the canvas is at 400% or 10%. Without that, the title bar — the only way to move the live screen — shrank with the zoom and became unhittable at 5px on a zoomed-out board.
+
+Resize handles appear on the selected, unlocked screen: eight of them, clockwise from the top-left. A handle moves only the edges it names, so resizing from the north-west corner moves the origin and leaves the south-east corner exactly where it was — including when the drag is clamped at the 64px minimum, which otherwise makes a squashed screen crawl across the canvas. A drag of zero distance is an exact no-op rather than snapping the box to the grid.
 
 Only the selected screen mounts the live `<webview>`/`<iframe>`; every other screen renders a static, pointer-inert snapshot. A twenty-screen board therefore costs one live guest, not twenty. The live surface is a separate always-mounted layer positioned over the active screen rather than a child of it, so switching screens re-navigates the guest instead of tearing it down and rebuilding it.
 

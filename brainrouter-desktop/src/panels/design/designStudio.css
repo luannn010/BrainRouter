@@ -291,7 +291,24 @@
 .design-studio .ds-screen-body, .design-studio .ds-live-screen { position:relative; width:100%; height:100%; overflow:hidden; border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); background:var(--ds-surface); box-shadow:0 20px 50px rgba(0,0,0,.42); }
 .design-studio .ds-live-screen { position:absolute; }
 .design-studio .ds-screen.is-selected .ds-screen-body, .design-studio .ds-live-screen.is-selected { border-color:var(--ds-accent); box-shadow:0 0 0 2px var(--ds-accent-wash),0 20px 50px rgba(0,0,0,.42); }
+/* A non-live screen is a picture, so its whole body is a drag handle — this is
+   the Canvas tab's behaviour. The live screen's body is the running prototype
+   and stays clickable; its header is how you move it. */
+.design-studio .ds-screen:not(.is-active) .ds-screen-body { cursor: grab; }
+.design-studio .ds-screen:not(.is-active).is-locked .ds-screen-body { cursor: not-allowed; }
+.design-studio .ds-stage-shell.is-panning .ds-screen-body { cursor: grabbing; }
 .design-studio .ds-screen-doc { width:100%; height:100%; border:0; background:#fff; pointer-events:none; }
+/* --- Resize handles (selected screen only, counter-scaled by the canvas zoom) --- */
+.design-studio .ds-screen-resize { position:absolute; z-index:1001; box-sizing:border-box;
+  background:var(--ds-surface); border-style:solid; border-color:var(--ds-accent); border-radius:2px; }
+.design-studio .ds-screen-resize--nw { left:0; top:0; transform:translate(-50%,-50%); cursor:nwse-resize; }
+.design-studio .ds-screen-resize--n  { left:50%; top:0; transform:translate(-50%,-50%); cursor:ns-resize; }
+.design-studio .ds-screen-resize--ne { left:100%; top:0; transform:translate(-50%,-50%); cursor:nesw-resize; }
+.design-studio .ds-screen-resize--e  { left:100%; top:50%; transform:translate(-50%,-50%); cursor:ew-resize; }
+.design-studio .ds-screen-resize--se { left:100%; top:100%; transform:translate(-50%,-50%); cursor:nwse-resize; }
+.design-studio .ds-screen-resize--s  { left:50%; top:100%; transform:translate(-50%,-50%); cursor:ns-resize; }
+.design-studio .ds-screen-resize--sw { left:0; top:100%; transform:translate(-50%,-50%); cursor:nesw-resize; }
+.design-studio .ds-screen-resize--w  { left:0; top:50%; transform:translate(-50%,-50%); cursor:ew-resize; }
 .design-studio .ds-screen-blank { width:100%; height:100%; background:var(--ds-bg); }
 .design-studio .ds-stage-shell .ds-stage { position:absolute; inset:0; width:auto; height:auto; margin:0; border:0; border-radius:0; }
 .design-studio .ds-marquee { position:absolute; border:1px solid var(--ds-accent); background:var(--ds-accent-wash); pointer-events:none; }
