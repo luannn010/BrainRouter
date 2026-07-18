@@ -3,6 +3,8 @@ import { Icon } from '../../icons.js';
 import type { PrototypeEntry } from '../../lib/design/prototypeMeta.js';
 import { componentElements, type DesignElement } from '../../lib/design/designElements.js';
 import type { CanvasComponent } from '../../lib/design/canvasModel.js';
+import type { DesignAnnotation } from '../../lib/design/designAnnotations.js';
+import { canvasLayerRows, type LayerRow } from '../../lib/design/designLayers.js';
 
 /** Drag payload the canvas listens for when a saved component is dropped. */
 export const COMPONENT_DRAG_TYPE = 'application/x-brainrouter-component';
@@ -16,7 +18,7 @@ const RESOURCES: Array<{ id: DesignResource; label: string; icon: string }> = [
   { id: 'scales', label: 'Scales', icon: 'chart' },
 ];
 
-export function DesignResourceRail({ activeResource, onResourceChange, entries, selected, onSelect, elements, selectedRef, onLayerSelect, components, onDeleteComponent }: {
+export function DesignResourceRail({ activeResource, onResourceChange, entries, selected, onSelect, elements, selectedRef, onLayerSelect, components, onDeleteComponent, annotations, selectedAnnoIds, onAnnotationSelect }: {
   activeResource: DesignResource;
   onResourceChange: (resource: DesignResource) => void;
   entries: PrototypeEntry[];
@@ -28,6 +30,10 @@ export function DesignResourceRail({ activeResource, onResourceChange, entries, 
   /** Saved components from the canvas document — draggable onto the canvas. */
   components: readonly CanvasComponent[];
   onDeleteComponent: (id: string) => void;
+  /** Objects drawn on the canvas — the other half of the Design tab's tree. */
+  annotations: readonly DesignAnnotation[];
+  selectedAnnoIds: readonly string[];
+  onAnnotationSelect: (id: string, additive: boolean) => void;
 }): React.ReactElement {
   return <aside className="ds-resource-rail" aria-label="Design resources">
     <div className="ds-resource-tabs" role="tablist" aria-label="Resource types">
@@ -49,7 +55,10 @@ export function DesignResourceRail({ activeResource, onResourceChange, entries, 
         <ComponentList elements={componentElements(elements)} selectedRef={selectedRef} onSelect={onLayerSelect} />
       </>}
       {activeResource === 'scales' && <ResourceList title="Scales" items={['Typography · 12 / 14 / 16 / 20 / 28', 'Spacing · 4 / 8 / 12 / 16 / 24', 'Radius · 4 / 6 / 10 / 12', 'Signal · #34C28E']} empty="Select a flow to inspect its design scales." />}
-      {activeResource === 'design' && <DesignLayerTree elements={elements} selectedRef={selectedRef} onSelect={onLayerSelect} />}
+      {activeResource === 'design' && <>
+        <CanvasLayerTree rows={canvasLayerRows(annotations, components)} selectedIds={selectedAnnoIds} onSelect={onAnnotationSelect} />
+        <DesignLayerTree elements={elements} selectedRef={selectedRef} onSelect={onLayerSelect} />
+      </>}
     </div>
   </aside>;
 }
@@ -85,6 +94,37 @@ function SavedComponentList({ components, onDelete }: { components: readonly Can
 
 function ComponentList({ elements, selectedRef, onSelect }: { elements: DesignElement[]; selectedRef: string | null; onSelect: (ref: string) => void }): React.ReactElement {
   return <><div className="ds-resource-section"><span className="ds-eyebrow">Components</span><span className="ds-resource-count">{elements.length}</span></div>{elements.length ? <div className="ds-layer-tree" role="list" aria-label="Prototype components">{elements.map((element) => <button key={element.ref} type="button" className={`ds-layer-row${selectedRef === element.ref ? ' is-selected' : ''}`} aria-pressed={selectedRef === element.ref} onClick={() => onSelect(element.ref)}><Icon name={element.tag === 'button' ? 'bolt' : 'file'} size={11} /><span>{element.componentId || element.text || element.tag}</span><small data-mono>{element.testid || element.tag}</small></button>)}</div> : <p className="ds-empty">No reusable component candidates detected.</p>}</>;
+}
+
+/**
+ * Objects drawn on the canvas. Separate from the DOM tree below it because
+ * they are different things: these are yours, those are the prototype's.
+ * Multi-select, unlike the DOM tree — it mirrors the canvas selection.
+ */
+function CanvasLayerTree({ rows, selectedIds, onSelect }: {
+  rows: LayerRow[];
+  selectedIds: readonly string[];
+  onSelect: (id: string, additive: boolean) => void;
+}): React.ReactElement {
+  return <>
+    <div className="ds-resource-section"><span className="ds-eyebrow">Canvas</span><span className="ds-resource-count">{rows.length}</span></div>
+    {rows.length
+      ? <div className="ds-layer-tree" role="tree" aria-multiselectable="true" aria-label="Canvas layers">
+        {rows.map((row) => <button key={row.id} type="button" role="treeitem"
+          aria-selected={selectedIds.includes(row.id)} aria-level={row.depth + 1}
+          className={`ds-layer-row${selectedIds.includes(row.id) ? ' is-selected' : ''}${row.hidden ? ' is-hidden' : ''}${row.locked ? ' is-locked' : ''}`}
+          style={{ paddingLeft: 10 + row.depth * 14 }}
+          onClick={(e) => onSelect(row.id, e.shiftKey)}>
+          <Icon name={row.icon} size={11} />
+          <span>{row.label}</span>
+          {/* A hidden layer draws nothing on the canvas, so the rail is the
+              only place its state is legible — and the only way to unhide it. */}
+          {row.hidden ? <Icon name="eye" size={11} /> : null}
+          <small data-mono>{row.componentName ?? row.meta}</small>
+        </button>)}
+      </div>
+      : <p className="ds-empty">Nothing drawn yet. Use the Frame, Shape or Text tools on the canvas.</p>}
+  </>;
 }
 
 function DesignLayerTree({ elements, selectedRef, onSelect }: { elements: DesignElement[]; selectedRef: string | null; onSelect: (ref: string) => void }): React.ReactElement {

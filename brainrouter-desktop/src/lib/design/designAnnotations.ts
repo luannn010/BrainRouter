@@ -33,6 +33,10 @@ export interface DesignAnnotation extends StageRect {
   path?: string;
   /** Set on a container to lay its members out automatically. */
   autoLayout?: CanvasAutoLayout;
+  /** The component this layer was packed into, if any. Components live in the
+   *  canvas document while annotations live per-prototype, so this can dangle
+   *  if the component is deleted — readers treat a missing id as unpacked. */
+  componentId?: string;
 }
 
 /** Drags smaller than this are treated as clicks, not draws. */
@@ -124,20 +128,30 @@ export function removeAnnotation(list: readonly DesignAnnotation[], id: string):
   return list.filter((a) => a.id !== id);
 }
 
+/** A copy is a new object, not the same one — being packed into a component is
+ *  a fact about the original. Carrying the link would also leak it across
+ *  prototypes, since the clipboard outlives a prototype switch. */
+function unpacked(a: DesignAnnotation): DesignAnnotation {
+  if (a.componentId === undefined) return a;
+  const { componentId, ...rest } = a;
+  void componentId;
+  return rest;
+}
+
 /** Copy with a small offset, appended on top. Returns the new list + id. */
 export function duplicateAnnotation(list: readonly DesignAnnotation[], id: string): { list: DesignAnnotation[]; id: string | null } {
   const source = list.find((a) => a.id === id);
   if (!source) return { list: [...list], id: null };
-  const copy = { ...source, id: nextId(), x: source.x + DUPLICATE_OFFSET, y: source.y + DUPLICATE_OFFSET };
+  const copy = unpacked({ ...source, id: nextId(), x: source.x + DUPLICATE_OFFSET, y: source.y + DUPLICATE_OFFSET });
   return { list: [...list, copy], id: copy.id };
 }
 
 /** Paste a clipboard annotation centered at a stage point (context menu's
  *  "Paste here"), or offset from its origin when no point is given (Ctrl+V). */
 export function pasteAnnotation(list: readonly DesignAnnotation[], clipboard: DesignAnnotation, at?: StagePoint): { list: DesignAnnotation[]; id: string } {
-  const copy = at
+  const copy = unpacked(at
     ? { ...clipboard, id: nextId(), x: at.x - clipboard.w / 2, y: at.y - clipboard.h / 2 }
-    : { ...clipboard, id: nextId(), x: clipboard.x + DUPLICATE_OFFSET, y: clipboard.y + DUPLICATE_OFFSET };
+    : { ...clipboard, id: nextId(), x: clipboard.x + DUPLICATE_OFFSET, y: clipboard.y + DUPLICATE_OFFSET });
   return { list: [...list, copy], id: copy.id };
 }
 
@@ -299,6 +313,7 @@ function parseAnnotation(value: unknown): DesignAnnotation | null {
   if (a.locked === true) parsed.locked = true;
   if (a.mask === true) parsed.mask = true;
   if (typeof a.groupId === 'string' && a.groupId.trim()) parsed.groupId = a.groupId;
+  if (typeof a.componentId === 'string' && a.componentId.trim()) parsed.componentId = a.componentId;
   if (typeof a.path === 'string' && a.path.trim()) parsed.path = a.path;
   const autoLayout = parseAutoLayout(a.autoLayout);
   if (autoLayout) parsed.autoLayout = autoLayout;

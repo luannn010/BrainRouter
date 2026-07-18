@@ -233,3 +233,19 @@ test('group, mask and auto-layout state survive persistence', () => {
   assert.equal(store.key[1].groupId, 'f');
   assert.equal(store.key[1].mask, true);
 });
+
+test('a copy is never claimed as the component the original was packed into', () => {
+  const packed = { ...createAnnotation('frame', { x: 0, y: 0, w: 10, h: 10 }, { id: 'f' }), componentId: 'c1' };
+  const duplicated = duplicateAnnotation([packed], 'f');
+  assert.equal('componentId' in duplicated.list[1], false, 'duplicate drops the pack link');
+  const pasted = pasteAnnotation([], packed);
+  assert.equal('componentId' in pasted.list[0], false, 'paste drops it too — the clipboard outlives a prototype switch');
+  assert.equal(packed.componentId, 'c1', 'the original keeps it');
+});
+
+test('a component link round-trips, and a malformed one is dropped', () => {
+  const packed = { ...createAnnotation('frame', { x: 0, y: 0, w: 10, h: 10 }, { id: 'f' }), componentId: 'c1' };
+  assert.equal(parseAnnotationStore(serializeAnnotationStore({ key: [packed] })).key[0].componentId, 'c1');
+  const broken = parseAnnotationStore(JSON.stringify({ key: [{ ...packed, componentId: 42 }] }));
+  assert.equal(broken.key[0].componentId, undefined);
+});

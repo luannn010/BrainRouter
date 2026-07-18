@@ -135,14 +135,23 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     protos.refresh();
   };
 
+  // Deliberately does NOT switch tabs: packing a layer now shows up in place,
+  // as the layer's own row turning into a component. Jumping to the Components
+  // tab would hide the one piece of feedback that says what happened.
   const saveComponents = (component: ReturnType<typeof componentFromHtml>): void => {
     canvas.save({ ...canvas.document, components: addComponent(canvas.document.components, component) });
-    setResource('components');
   };
   const createComponentFrom = (members: readonly DesignAnnotation[]): void => {
     if (members.length === 0) return;
     const base = members.length === 1 ? (members[0].label.trim() || 'Component') : 'Component';
-    saveComponents(componentFromSelection(uniqueComponentName(canvas.document.components, base), members));
+    const component = componentFromSelection(uniqueComponentName(canvas.document.components, base), members);
+    saveComponents(component);
+    // Record the pack on the source layers so the tree can show them as the
+    // component they became. A link to a component that is later deleted
+    // resolves to nothing and reads as unpacked, so no cleanup pass is needed.
+    const ids = new Set(members.map((a) => a.id));
+    changeAnnotations(annotations.map((a) => ids.has(a.id) ? { ...a, componentId: component.id } : a));
+    setScreenNotice(`Packed ${members.length === 1 ? `"${component.name}"` : `${members.length} layers`} into a component.`);
   };
   const flattenSelection = (members: readonly DesignAnnotation[]): void => {
     const bounds = boundsOf(members);
@@ -545,17 +554,37 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     } catch { /* Local persistence is optional. */ }
     previewRef.current?.reload();
   };
+  // The rail's two trees drive two different selections. Picking in one clears
+  // the other, or the rail would show two highlighted rows and the inspector
+  // would keep showing a DOM element that is no longer selected.
   const selectLayer = (ref: string): void => {
+    setAnnoIds([]);
     setSelectedRef(ref);
     setInspectorTab('design');
     const element = elements.find((item) => item.ref === ref);
     if (element?.testid) onPick({ testid: element.testid, tag: element.tag, label: element.testid });
   };
+  const selectCanvasLayer = (id: string, additive: boolean): void => {
+    setAnnoIds((current) => additive
+      ? (current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
+      : (current.includes(id) ? current : [id]));
+    // `picked` also feeds selectedElement, so clearing the ref alone would
+    // leave the inspector showing the old element.
+    setSelectedRef(null);
+    onPick(null);
+  };
+  const selectFromCanvas = (ids: string[]): void => {
+    setAnnoIds(ids);
+    if (ids.length === 0) return;
+    setSelectedRef(null);
+    onPick(null);
+  };
 
   return <div className="ds-designs ds-design-editor">
     <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer}
       components={canvas.document.components}
-      onDeleteComponent={(id) => canvas.save({ ...canvas.document, components: canvas.document.components.filter((item) => item.id !== id) })} />
+      onDeleteComponent={(id) => canvas.save({ ...canvas.document, components: canvas.document.components.filter((item) => item.id !== id) })}
+      annotations={annotations} selectedAnnoIds={annoIds} onAnnotationSelect={selectCanvasLayer} />
     <main className="ds-editor-stage">
       <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => applyDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
       <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu} onDragOver={onCanvasDragOver} onDrop={onCanvasDrop}>
@@ -569,7 +598,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
             style={{ left: activeNode.position.x, top: activeNode.position.y, width: activeNode.width, height: activeNode.height, zIndex: LIVE_LAYER_Z }}>
             <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}
               overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedIds={annoIds}
-                clipboard={clipboard} onSelect={setAnnoIds} onChange={changeAnnotations} onClipboardChange={setClipboard}
+                clipboard={clipboard} onSelect={selectFromCanvas} onChange={changeAnnotations} onClipboardChange={setClipboard}
                 onCreateComponent={createComponentFrom} onQuickChat={() => setQuickChatOpen(true)} />}
               onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
           </div> : null}
@@ -585,7 +614,12 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
           onAction={applyScreenAction}
           onClose={() => setScreenMenu(null)} /> : null}
         {quickChatOpen ? <QuickComponentChat
-          onGenerated={(html, name) => saveComponents(componentFromHtml(uniqueComponentName(canvas.document.components, name || 'Component'), html, { w: 320, h: 200 }))}
+          onGenerated={(html, name) => {
+            saveComponents(componentFromHtml(uniqueComponentName(canvas.document.components, name || 'Component'), html, { w: 320, h: 200 }));
+            // A generated component has no layer on the canvas to point at, so
+            // the Components tab is the only place it becomes visible.
+            setResource('components');
+          }}
           onClose={() => setQuickChatOpen(false)} /> : null}
       </div>
       <DesignBottomToolbar tool={tool} onToolChange={setTool} frameKind={frameKind} shapeKind={shapeKind}

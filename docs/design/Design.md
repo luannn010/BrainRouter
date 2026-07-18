@@ -41,7 +41,18 @@ BrainRouter’s desktop Design Studio uses a dark, instrument-like editor surfac
 
 ### Resource rail
 
-The left rail exposes Files, Assets, Components, Scales, and Design. Files selects prototype flows. Assets and Scales are read-only inventories derived from the selected HTML. Design shows the semantic layer tree, with indentation reflecting DOM depth and Signal/blue selection treatment.
+The left rail exposes Files, Assets, Components, Scales, and Design. Files selects prototype flows. Assets and Scales are read-only inventories derived from the selected HTML.
+
+Design shows **two trees**, because they are two different things — what you drew, and what the prototype is:
+
+- **Canvas** lists the objects drawn on the stage (frames, sections, shapes, text, baked paths). Array order is z-order with the last on top, so the tree reverses it to read topmost-first. A frame or section nests its members underneath it, to any depth. A plain group (Ctrl+G) mints an id matching no annotation, so its members stay flat rather than nesting under a parent that does not exist — and a frame drawn with the F tool adopts nothing, so drawing a frame around shapes does not nest them; only Frame selection (Ctrl+Alt+G) does. Multi-select mirrors the canvas: shift-click accumulates.
+- **Layers** is the prototype's semantic DOM tree, with indentation reflecting DOM depth.
+
+The two trees drive different selections, so picking in one clears the other — including the `picked` element, not just `selectedRef`, or the inspector would keep showing an element that is no longer selected.
+
+A hidden layer draws nothing on the stage and is transparent to hit-testing, which makes the rail the only surface where its state is legible and the only place it can be selected to unhide. It is therefore struck through and dimmed rather than removed, and stays clickable.
+
+A layer packed into a component (Create component / Ctrl+Alt+K) shows the component glyph and the component's name in place of its kind. **Packedness is derived, not stored as a fact:** the annotation keeps a `componentId`, and the tree resolves it against the live component list each render. Annotations are per-prototype in localStorage while components live in the per-workspace canvas document, so that pointer can outlive its target — resolving it means a deleted component leaves the layer reading as exactly what it is again, with no cleanup pass and no stale rows. Copy, paste and duplicate strip the link, since a copy is a new object and the clipboard outlives a prototype switch.
 
 Components has two parts: **Saved** components persisted in the canvas document, and below them the read-only component candidates derived from the current HTML. A saved component is draggable — dropping it on the canvas places it at the drop point, snapped to the grid.
 
