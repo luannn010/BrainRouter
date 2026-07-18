@@ -1,6 +1,33 @@
-export const CANVAS_SCHEMA_VERSION = 1 as const;
+export const CANVAS_SCHEMA_VERSION = 2 as const;
+/**
+ * Versions this build can read. A v1 document is upgraded on load rather than
+ * rejected — real boards live on disk at .brainrouter/design/canvas.json, and
+ * rejecting them would silently reset everyone's layout.
+ */
+const READABLE_VERSIONS = new Set([1, 2]);
 
 export type CanvasLayoutMode = 'manual' | 'flow' | 'grid';
+
+export type AutoLayoutDirection = 'row' | 'column';
+export type AutoLayoutAlign = 'start' | 'center' | 'end';
+
+/** Positions a container's members automatically instead of by hand. */
+export interface CanvasAutoLayout {
+  direction: AutoLayoutDirection;
+  gap: number;
+  padX: number;
+  padY: number;
+  align: AutoLayoutAlign;
+}
+
+/** A reusable snippet promoted from a selection or generated from a prompt. */
+export interface CanvasComponent {
+  id: string;
+  name: string;
+  html: string;
+  width: number;
+  height: number;
+}
 
 export interface CanvasPoint {
   x: number;
@@ -15,6 +42,10 @@ export interface CanvasNode {
   height: number;
   groupId?: string;
   zIndex: number;
+  hidden?: boolean;
+  locked?: boolean;
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface CanvasGroup {
@@ -24,6 +55,7 @@ export interface CanvasGroup {
   width: number;
   height: number;
   collapsed: boolean;
+  autoLayout?: CanvasAutoLayout;
 }
 
 export interface CanvasEdge {
@@ -57,6 +89,7 @@ export interface CanvasDocument {
   annotations: CanvasAnnotation[];
   /** Prototype ids intentionally kept out of the board but available to restore. */
   hiddenPrototypeIds: string[];
+  components: CanvasComponent[];
   preferences: CanvasPreferences;
 }
 
@@ -125,6 +158,7 @@ export function createCanvasDocument(entries: readonly CanvasPrototypeEntry[]): 
     edges: [],
     annotations: [],
     hiddenPrototypeIds: [],
+    components: [],
     preferences: { ...DEFAULT_CANVAS_PREFERENCES },
   };
 }
@@ -145,10 +179,53 @@ function stringField(value: unknown, field: string): string {
   return value;
 }
 
+/** Optional booleans are stored only when true, so documents stay small. */
+function flag(value: unknown): boolean | undefined {
+  return value === true ? true : undefined;
+}
+
+function autoLayoutField(value: unknown, field: string): CanvasAutoLayout | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object') throw new Error(`${field} must be an object`);
+  const raw = value as Record<string, unknown>;
+  if (raw.direction !== 'row' && raw.direction !== 'column') throw new Error(`${field}.direction must be row or column`);
+  if (raw.align !== 'start' && raw.align !== 'center' && raw.align !== 'end') throw new Error(`${field}.align must be start, center or end`);
+  return {
+    direction: raw.direction,
+    gap: finite(raw.gap, `${field}.gap`),
+    padX: finite(raw.padX, `${field}.padX`),
+    padY: finite(raw.padY, `${field}.padY`),
+    align: raw.align,
+  };
+}
+
+function componentList(value: unknown): CanvasComponent[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('components must be an array');
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') throw new Error(`components[${index}] must be an object`);
+    const raw = entry as Record<string, unknown>;
+    const id = stringField(raw.id, `components[${index}].id`);
+    const width = finite(raw.width, `components[${index}].width`);
+    const height = finite(raw.height, `components[${index}].height`);
+    if (width <= 0) throw new Error(`components[${index}].width must be positive`);
+    if (height <= 0) throw new Error(`components[${index}].height must be positive`);
+    return {
+      id,
+      name: stringField(raw.name, `components[${index}].name`),
+      html: stringField(raw.html, `components[${index}].html`),
+      width,
+      height,
+    };
+  });
+}
+
 export function validateCanvasDocument(value: unknown): CanvasDocument {
   if (!value || typeof value !== 'object') throw new Error('Canvas document must be an object');
   const raw = value as Record<string, unknown>;
-  if (raw.version !== CANVAS_SCHEMA_VERSION) throw new Error(`unsupported Canvas schema version: ${String(raw.version)}`);
+  if (typeof raw.version !== 'number' || !READABLE_VERSIONS.has(raw.version)) {
+    throw new Error(`unsupported Canvas schema version: ${String(raw.version)}`);
+  }
   if (!Array.isArray(raw.nodes) || !Array.isArray(raw.groups) || !Array.isArray(raw.edges) || !Array.isArray(raw.annotations)) {
     throw new Error('Canvas document collections must be arrays');
   }
@@ -176,6 +253,10 @@ export function validateCanvasDocument(value: unknown): CanvasDocument {
       };
       if (node.width <= 0 || node.height <= 0) throw new Error(`nodes[${index}] dimensions must be positive`);
       if (typeof n.groupId === 'string' && n.groupId.trim()) node.groupId = n.groupId;
+      node.hidden = flag(n.hidden);
+      node.locked = flag(n.locked);
+      node.flipX = flag(n.flipX);
+      node.flipY = flag(n.flipY);
       return node;
     }),
     groups: raw.groups.map((item, index) => {
@@ -188,6 +269,7 @@ export function validateCanvasDocument(value: unknown): CanvasDocument {
         width: finite(g.width, `groups[${index}].width`),
         height: finite(g.height, `groups[${index}].height`),
         collapsed: g.collapsed === true,
+        autoLayout: autoLayoutField(g.autoLayout, `groups[${index}].autoLayout`),
       };
     }),
     edges: raw.edges.map((item, index) => {
@@ -213,6 +295,7 @@ export function validateCanvasDocument(value: unknown): CanvasDocument {
       };
     }),
     hiddenPrototypeIds: Array.from(new Set(hiddenPrototypeIds)),
+    components: componentList(raw.components),
     preferences: {
       layoutMode: prefs.layoutMode,
       gridEnabled: prefs.gridEnabled !== false,
