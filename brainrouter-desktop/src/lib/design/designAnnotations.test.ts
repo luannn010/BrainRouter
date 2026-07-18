@@ -6,6 +6,7 @@ import {
   moveAnnotation, nextGroupLabel, normalizeRect, parseAnnotationStore,
   pasteAnnotation, polygonPointsFor, removeAnnotation, sendToBack,
   serializeAnnotationStore, setAnnotationLabel, starPointsFor, toggleAnnotationFlag,
+  boundsOf, frameSelection, groupAnnotations, membersOf, setMask, ungroupAnnotations,
   DUPLICATE_OFFSET,
 } from './designAnnotations.js';
 
@@ -149,4 +150,86 @@ test('annotation store round-trips, migrates legacy "shape", and survives corrup
   assert.deepEqual(parsed.map((a) => a.kind), ['rectangle', 'line']);
   assert.equal(parsed[1].flipY, true);
   assert.equal(parsed[1].locked, true);
+});
+
+test('grouping stamps one fresh id on every member and ungrouping clears it', () => {
+  const list = [
+    createAnnotation('rectangle', { x: 0, y: 0, w: 10, h: 10 }, { id: 'a' }),
+    createAnnotation('ellipse', { x: 20, y: 0, w: 10, h: 10 }, { id: 'b' }),
+    createAnnotation('text', { x: 99, y: 99, w: 10, h: 10 }, { id: 'c' }),
+  ];
+  const grouped = groupAnnotations(list, ['a', 'b']);
+  assert.ok(grouped.groupId);
+  assert.equal(grouped.list[0].groupId, grouped.groupId);
+  assert.equal(grouped.list[1].groupId, grouped.groupId);
+  assert.equal(grouped.list[2].groupId, undefined, 'an unselected annotation is untouched');
+  assert.deepEqual(membersOf(grouped.list, grouped.groupId).map((a) => a.id), ['a', 'b']);
+  const ungrouped = ungroupAnnotations(grouped.list, ['a', 'b']);
+  assert.equal(ungrouped[0].groupId, undefined);
+  assert.equal(ungrouped[1].groupId, undefined);
+});
+
+test('grouping fewer than two annotations is a no-op', () => {
+  const list = [createAnnotation('rectangle', { x: 0, y: 0, w: 10, h: 10 }, { id: 'a' })];
+  const grouped = groupAnnotations(list, ['a']);
+  assert.equal(grouped.groupId, null);
+  assert.equal(grouped.list[0].groupId, undefined);
+});
+
+test('bounds union a list and report nothing for an empty one', () => {
+  const list = [
+    createAnnotation('rectangle', { x: 10, y: 20, w: 30, h: 40 }, { id: 'a' }),
+    createAnnotation('ellipse', { x: 50, y: 0, w: 10, h: 10 }, { id: 'b' }),
+  ];
+  assert.deepEqual(boundsOf(list), { x: 10, y: 0, w: 50, h: 60 });
+  assert.equal(boundsOf([]), null);
+});
+
+test('framing a selection wraps it in a padded container behind its members', () => {
+  const list = [
+    createAnnotation('text', { x: 0, y: 0, w: 100, h: 20 }, { id: 'a' }),
+    createAnnotation('rectangle', { x: 40, y: 40, w: 60, h: 60 }, { id: 'b' }),
+  ];
+  const { list: framed, id } = frameSelection(list, ['a', 'b']);
+  assert.ok(id);
+  const frame = framed.find((a) => a.id === id)!;
+  assert.equal(frame.kind, 'frame');
+  assert.equal(frame.label, 'Frame 1');
+  assert.deepEqual({ x: frame.x, y: frame.y, w: frame.w, h: frame.h }, { x: -24, y: -24, w: 148, h: 148 });
+  assert.equal(framed.indexOf(frame), 0, 'the container sits behind what it contains');
+  assert.equal(framed.find((a) => a.id === 'a')!.groupId, id);
+  assert.equal(framed.find((a) => a.id === 'b')!.groupId, id);
+});
+
+test('a mask is exclusive within its group but leaves other groups alone', () => {
+  const list = [
+    { ...createAnnotation('rectangle', { x: 0, y: 0, w: 10, h: 10 }, { id: 'a' }), groupId: 'g1', mask: true },
+    { ...createAnnotation('ellipse', { x: 0, y: 0, w: 10, h: 10 }, { id: 'b' }), groupId: 'g1' },
+    { ...createAnnotation('star', { x: 0, y: 0, w: 10, h: 10 }, { id: 'c' }), groupId: 'g2', mask: true },
+  ];
+  const masked = setMask(list, 'b');
+  assert.equal(masked.find((a) => a.id === 'b')!.mask, true);
+  assert.equal(masked.find((a) => a.id === 'a')!.mask, undefined, 'the previous mask in g1 is cleared');
+  assert.equal(masked.find((a) => a.id === 'c')!.mask, true, 'g2 keeps its own mask');
+});
+
+test('a path annotation round-trips and a pathless one is dropped', () => {
+  const path = { ...createAnnotation('path', { x: 0, y: 0, w: 10, h: 10 }, { id: 'p' }), path: 'M0,0 L10,0 L10,10 Z' };
+  const store = parseAnnotationStore(serializeAnnotationStore({ key: [path] }));
+  assert.equal(store.key.length, 1);
+  assert.equal(store.key[0].path, 'M0,0 L10,0 L10,10 Z');
+  const broken = parseAnnotationStore(JSON.stringify({ key: [{ ...path, path: '' }] }));
+  assert.deepEqual(broken.key, [], 'a path annotation with no geometry is not an annotation');
+});
+
+test('group, mask and auto-layout state survive persistence', () => {
+  const framed = {
+    ...createAnnotation('frame', { x: 0, y: 0, w: 100, h: 100 }, { id: 'f' }),
+    autoLayout: { direction: 'row' as const, gap: 8, padX: 4, padY: 4, align: 'center' as const },
+  };
+  const child = { ...createAnnotation('rectangle', { x: 0, y: 0, w: 10, h: 10 }, { id: 'c' }), groupId: 'f', mask: true };
+  const store = parseAnnotationStore(serializeAnnotationStore({ key: [framed, child] }));
+  assert.deepEqual(store.key[0].autoLayout, { direction: 'row', gap: 8, padX: 4, padY: 4, align: 'center' });
+  assert.equal(store.key[1].groupId, 'f');
+  assert.equal(store.key[1].mask, true);
 });

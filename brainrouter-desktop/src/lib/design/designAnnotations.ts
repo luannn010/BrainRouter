@@ -5,8 +5,12 @@
 // rendered inside the zoom-scaled stage, so annotations track zoom for free
 // and only pointer input needs unscaling (clientToStagePoint).
 
-/** 'frame'/'section' are labeled regions; the rest are drawn shapes/text. */
-export type AnnotationKind = 'frame' | 'section' | 'rectangle' | 'line' | 'ellipse' | 'polygon' | 'star' | 'text';
+import type { CanvasAutoLayout } from './canvasModel.js';
+
+/** 'frame'/'section' are labeled regions; 'path' is baked vector geometry
+ *  produced by Flatten / Outline text / Outline stroke; the rest are drawn
+ *  shapes and text. */
+export type AnnotationKind = 'frame' | 'section' | 'rectangle' | 'line' | 'ellipse' | 'polygon' | 'star' | 'text' | 'path';
 
 export interface StagePoint { x: number; y: number }
 export interface StageRect { x: number; y: number; w: number; h: number }
@@ -21,6 +25,14 @@ export interface DesignAnnotation extends StageRect {
   flipY?: boolean;
   hidden?: boolean;
   locked?: boolean;
+  /** Group or frame this annotation belongs to. */
+  groupId?: string;
+  /** This annotation clips its siblings in the same group. */
+  mask?: boolean;
+  /** SVG path data in the annotation's own box space — set for kind 'path'. */
+  path?: string;
+  /** Set on a container to lay its members out automatically. */
+  autoLayout?: CanvasAutoLayout;
 }
 
 /** Drags smaller than this are treated as clicks, not draws. */
@@ -28,6 +40,8 @@ export const MIN_DRAG_PX = 4;
 export const DEFAULT_TEXT_SIZE = { w: 160, h: 24 };
 /** Offset applied to duplicates and keyboard pastes so copies don't stack. */
 export const DUPLICATE_OFFSET = 12;
+/** Breathing room a "Frame selection" container leaves around its members. */
+export const FRAME_PADDING = 24;
 
 export function normalizeRect(a: StagePoint, b: StagePoint): StageRect {
   return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
@@ -146,6 +160,80 @@ export function toggleAnnotationFlag(list: readonly DesignAnnotation[], id: stri
   return list.map((a) => a.id === id ? { ...a, [flag]: !a[flag] } : a);
 }
 
+// --- containers: groups, frames and masks ---
+
+/** Smallest box covering every annotation in the list. */
+export function boundsOf(list: readonly DesignAnnotation[]): StageRect | null {
+  if (list.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const a of list) {
+    minX = Math.min(minX, a.x);
+    minY = Math.min(minY, a.y);
+    maxX = Math.max(maxX, a.x + a.w);
+    maxY = Math.max(maxY, a.y + a.h);
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+export function membersOf(list: readonly DesignAnnotation[], groupId: string | null): DesignAnnotation[] {
+  return groupId ? list.filter((a) => a.groupId === groupId) : [];
+}
+
+/** An invisible container: members move together but nothing is drawn for it.
+ *  Grouping one annotation would be meaningless, so it is a no-op. */
+export function groupAnnotations(list: readonly DesignAnnotation[], ids: readonly string[]): { list: DesignAnnotation[]; groupId: string | null } {
+  const chosen = new Set(ids);
+  if (list.filter((a) => chosen.has(a.id)).length < 2) return { list: [...list], groupId: null };
+  const groupId = nextId();
+  return { list: list.map((a) => chosen.has(a.id) ? { ...a, groupId } : a), groupId };
+}
+
+export function ungroupAnnotations(list: readonly DesignAnnotation[], ids: readonly string[]): DesignAnnotation[] {
+  const chosen = new Set(ids);
+  return list.map((a) => {
+    if (!chosen.has(a.id) || a.groupId === undefined) return a;
+    const { groupId, ...rest } = a;
+    void groupId;
+    return rest;
+  });
+}
+
+/** A visible titled container, in contrast to a group: it draws a box around
+ *  the selection, adopts it, and sits BEHIND its members so it reads as
+ *  something they are inside rather than something covering them. */
+export function frameSelection(list: readonly DesignAnnotation[], ids: readonly string[]): { list: DesignAnnotation[]; id: string | null } {
+  const chosen = new Set(ids);
+  const members = list.filter((a) => chosen.has(a.id));
+  const bounds = boundsOf(members);
+  if (!bounds) return { list: [...list], id: null };
+  const frame = createAnnotation('frame', {
+    x: bounds.x - FRAME_PADDING,
+    y: bounds.y - FRAME_PADDING,
+    w: bounds.w + FRAME_PADDING * 2,
+    h: bounds.h + FRAME_PADDING * 2,
+  }, { label: nextGroupLabel('frame', list) });
+  const adopted = list.map((a) => chosen.has(a.id) ? { ...a, groupId: frame.id } : a);
+  const firstMember = adopted.findIndex((a) => chosen.has(a.id));
+  const at = firstMember < 0 ? adopted.length : firstMember;
+  return { list: [...adopted.slice(0, at), frame, ...adopted.slice(at)], id: frame.id };
+}
+
+/** Exactly one mask per group — promoting a new one demotes the old. */
+export function setMask(list: readonly DesignAnnotation[], id: string): DesignAnnotation[] {
+  const target = list.find((a) => a.id === id);
+  if (!target) return [...list];
+  return list.map((a) => {
+    if (a.id === id) return { ...a, mask: true };
+    if (a.groupId !== target.groupId || !a.mask) return a;
+    const { mask, ...rest } = a;
+    void mask;
+    return rest;
+  });
+}
+
 // --- SVG geometry for the drawn shapes (viewBox `0 0 w h`) ---
 
 /** Triangle points; flipY points it downward. */
@@ -175,7 +263,25 @@ export function annotationsKey(workspaceRoot: string | undefined, protoId: strin
   return `${workspaceRoot ?? 'unknown'}:${protoId}`;
 }
 
-const KINDS: readonly string[] = ['frame', 'section', 'rectangle', 'line', 'ellipse', 'polygon', 'star', 'text'];
+const KINDS: readonly string[] = ['frame', 'section', 'rectangle', 'line', 'ellipse', 'polygon', 'star', 'text', 'path'];
+const LAYOUT_DIRECTIONS: readonly string[] = ['row', 'column'];
+const LAYOUT_ALIGNS: readonly string[] = ['start', 'center', 'end'];
+
+function parseAutoLayout(value: unknown): CanvasAutoLayout | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.direction !== 'string' || !LAYOUT_DIRECTIONS.includes(raw.direction)) return undefined;
+  if (typeof raw.align !== 'string' || !LAYOUT_ALIGNS.includes(raw.align)) return undefined;
+  const numbers = ['gap', 'padX', 'padY'] as const;
+  if (numbers.some((key) => typeof raw[key] !== 'number' || !Number.isFinite(raw[key] as number))) return undefined;
+  return {
+    direction: raw.direction as CanvasAutoLayout['direction'],
+    gap: raw.gap as number,
+    padX: raw.padX as number,
+    padY: raw.padY as number,
+    align: raw.align as CanvasAutoLayout['align'],
+  };
+}
 
 function parseAnnotation(value: unknown): DesignAnnotation | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -184,11 +290,18 @@ function parseAnnotation(value: unknown): DesignAnnotation | null {
   if (typeof a.id !== 'string' || !kind || !KINDS.includes(kind)) return null;
   if (typeof a.label !== 'string') return null;
   if (typeof a.x !== 'number' || typeof a.y !== 'number' || typeof a.w !== 'number' || typeof a.h !== 'number') return null;
+  // A path annotation IS its geometry; without it there is nothing to render.
+  if (kind === 'path' && (typeof a.path !== 'string' || !a.path.trim())) return null;
   const parsed: DesignAnnotation = { id: a.id, kind: kind as AnnotationKind, label: a.label, x: a.x, y: a.y, w: a.w, h: a.h };
   if (a.flipX === true) parsed.flipX = true;
   if (a.flipY === true) parsed.flipY = true;
   if (a.hidden === true) parsed.hidden = true;
   if (a.locked === true) parsed.locked = true;
+  if (a.mask === true) parsed.mask = true;
+  if (typeof a.groupId === 'string' && a.groupId.trim()) parsed.groupId = a.groupId;
+  if (typeof a.path === 'string' && a.path.trim()) parsed.path = a.path;
+  const autoLayout = parseAutoLayout(a.autoLayout);
+  if (autoLayout) parsed.autoLayout = autoLayout;
   return parsed;
 }
 
