@@ -3,7 +3,6 @@ import React, { useCallback, useRef, useState } from 'react';
 import { Icon } from '../icons.js';
 import { ResettableBoundary } from '../components/primitives/ResettableBoundary.js';
 import './design/designStudio.css';
-import { CanvasView } from './design/CanvasView.js';
 import { BrandsView } from './design/BrandsView.js';
 import { DesignsView } from './design/DesignsView.js';
 import { usePrototypes } from '../lib/design/usePrototypes.js';
@@ -11,12 +10,15 @@ import { type PreviewHandle, type Device, type PickInfo } from './design/Preview
 import { DesignChat } from './design/DesignChat.js';
 import type { DesignChatControls } from './design/DesignChatRail.js';
 
-export type StudioTab = 'canvas' | 'brands' | 'designs';
+export type StudioTab = 'designs' | 'brands';
 
+// Canvas is gone: it was a read-only board of the same prototypes the Design
+// tab now renders on a real world canvas you can drag, resize, annotate and
+// pack into components. Keeping both meant one of them was always the wrong
+// place to click.
 const TABS: Array<{ id: StudioTab; label: string; hint: string }> = [
-  { id: 'canvas', label: 'Canvas', hint: 'All prototype flows on one infinite canvas' },
+  { id: 'designs', label: 'Design', hint: 'Preview, drive and inspect a prototype' },
   { id: 'brands', label: 'Brands', hint: 'The brand system: colour, type, shape, motion, voice' },
-  { id: 'designs', label: 'Designs', hint: 'Preview, drive and inspect a prototype' },
 ];
 
 // Fallback for the side-panel rendering (renderPanelBody), which has no composer
@@ -24,7 +26,7 @@ const TABS: Array<{ id: StudioTab; label: string; hint: string }> = [
 const NO_CHAT_CONTROLS: DesignChatControls = { q: () => { /* no-op */ }, modelChoices: [], modeLabel: '', effort: '' };
 
 export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOpenRail, chat = NO_CHAT_CONTROLS, onRouteToMainChat, chatOpen: chatOpenProp, onChatOpenChange }: { workspaceRoot?: string; branch?: string | null; railOpen?: boolean; onOpenRail?: () => void; chat?: DesignChatControls; onRouteToMainChat?: (prompt: string) => void; chatOpen?: boolean; onChatOpenChange?: (open: boolean) => void }): React.ReactElement {
-  const [tab, setTab] = useState<StudioTab>('canvas');
+  const [tab, setTab] = useState<StudioTab>('designs');
   // Design mode controls the fix chat from the app's top-right cluster
   // (TopbarRight); the side-panel route passes no props and falls back to
   // local state (opened via the inspector's "Open Fix Chat", closed via the
@@ -39,11 +41,6 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
   const previewRef = useRef<PreviewHandle>(null);
   const [picked, setPicked] = useState<PickInfo | null>(null);
   const [draftContext, setDraftContext] = useState<string | null>(null);
-  // Bumped after an agent edit so the Canvas re-reads every frame's HTML.
-  const [canvasKey, setCanvasKey] = useState(0);
-
-  // Stable identity so the Canvas's memoised frames don't re-render on every tick.
-  const openInDesigns = useCallback((id: string): void => { protos.select(id); setTab('designs'); }, [protos.select]);
 
   return (
     <div className="design-studio">
@@ -75,7 +72,6 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
               took the nav down with it and "Dismiss" re-rendered the same broken
               view — errors on every tab switch, with no way back but a reload. */}
           <ResettableBoundary resetKey={tab} label={TABS.find((t) => t.id === tab)?.label ?? 'This view'}>
-            {tab === 'canvas' && <CanvasView key={canvasKey} onOpenInDesigns={openInDesigns} />}
             {tab === 'brands' && <BrandsView branch={branch} commit={null} iso={new Date().toISOString()} />}
             {tab === 'designs' && (
               <DesignsView
@@ -104,7 +100,7 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
               // Surface the edit on the shared preview: reload if Designs is mounted,
               // otherwise switch to it (mounting loads the just-edited file fresh).
               if (tab === 'designs') previewRef.current?.reload(); else setTab('designs');
-              setTimeout(() => { protos.refresh(); setCanvasKey((k) => k + 1); }, 400);
+              setTimeout(() => { protos.refresh(); }, 400);
             }}
           />
         )}

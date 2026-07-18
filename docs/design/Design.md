@@ -37,6 +37,14 @@ BrainRouter’s desktop Design Studio uses a dark, instrument-like editor surfac
 - Radii: 4px chips, 6px controls, 10px cards, 12px panels.
 - Stage uses a 24px grid for spatial orientation and for drag snapping; pan and zoom live on the world layer's transform and never resize surrounding chrome.
 
+## Studio tabs
+
+The Design Studio has **two** tabs: **Design** and **Brands**.
+
+A third, **Canvas**, was removed. It was a read-only board of prototype thumbnails, and the Design tab now renders the same screens on a real world canvas that you can drag, resize, annotate and pack into components — so Canvas had become a strictly weaker duplicate of the tab beside it, and having both meant one of them was always the wrong place to click. `CanvasView.tsx` and `CanvasInspector.tsx` were deleted with it; `useCanvasFrames` stayed, because the Design tab reads the same frames.
+
+Each tab renders inside its own `ResettableBoundary`, keyed by the active tab. The app-wide boundary in `main.tsx` replaces the whole window, so a throw in one view used to take the nav down with it and leave no way back but a reload. A contained failure keeps the other tab reachable, and switching away and back clears it.
+
 ## Design tab components
 
 ### Resource rail
@@ -54,7 +62,6 @@ A hidden layer draws nothing on the stage and is transparent to hit-testing, whi
 
 A layer packed into a component (Create component / Ctrl+Alt+K) shows the component glyph and the component's name in place of its kind. **Packedness is derived, not stored as a fact:** the annotation keeps a `componentId`, and the tree resolves it against the live component list each render. Annotations are per-prototype in localStorage while components live in the per-workspace canvas document, so that pointer can outlive its target — resolving it means a deleted component leaves the layer reading as exactly what it is again, with no cleanup pass and no stale rows. Copy, paste and duplicate strip the link, since a copy is a new object and the clipboard outlives a prototype switch.
 
-Components has two parts: **Saved** components persisted in the canvas document, and below them the read-only component candidates derived from the current HTML. A saved component is draggable — dropping it on the canvas places it at the drop point, snapped to the grid.
 
 A saved component's thumbnail renders inside an iframe with a **fully empty `sandbox`** (no `allow-scripts`). Component markup can come from a model, and this rail lives in the renderer origin that holds the bridge — rejecting `<script>` at generation time is not sufficient on its own, because an inline `onerror=` handler would still run. The sandbox is what actually makes it inert.
 
@@ -73,7 +80,7 @@ The center stage is a **world canvas**: a fixed viewport (`overflow:hidden`) con
 | Drag empty canvas (select tool) | Rubber-band selection |
 | `0` | Fit the selection, or the whole board |
 
-**Which parts of a screen you can grab** depends on whether it is the live one. A non-live screen is a picture — its snapshot iframe is `pointer-events:none`, so its whole body drags, exactly like the Canvas tab. The live screen's body is the running prototype and has to stay clickable, so that one moves by its title bar. Clicking a screen makes it live, so the first drag of a screen comes from its body and later ones from its title bar.
+**Which parts of a screen you can grab** depends on whether it is the live one. A non-live screen is a picture — its snapshot iframe is `pointer-events:none`, so its whole body drags. The live screen's body is the running prototype and has to stay clickable, so that one moves by its title bar. Clicking a screen makes it live, so the first drag of a screen comes from its body and later ones from its title bar.
 
 Screen **chrome is counter-scaled** by the canvas zoom: the title bar holds 22px and the resize handles 10px on screen whether the canvas is at 400% or 10%. Without that, the title bar — the only way to move the live screen — shrank with the zoom and became unhittable at 5px on a zoomed-out board.
 
@@ -103,7 +110,7 @@ Right-click acts on whatever was clicked — a screen, an annotation, or empty s
 | Flatten | Merges the selection into one `path` annotation whose `d` carries each member's outline as a subpath, matching Figma, where flatten yields one vector object of several subpaths. |
 | Outline text | **Real glyph contours.** There is no font-outline API in a renderer, so the text is rasterised to an offscreen alpha buffer and `traceMask` walks it with directed boundary edges into closed contours. Tracing "Ag" yields four subpaths — an outer contour and a counter for each letter. The tracer is pure, so it is tested against synthetic masks; only the rasterisation touches the DOM. |
 | Outline stroke | Converts a stroked shape into a filled band: an outer ring plus an inner ring wound the other way. Exact for straight-edged kinds and ellipses; for a star or a traced path it bands off the bounding box. |
-| Create component | Promotes the selection to a `CanvasComponent` — a self-contained SVG — persisted in the document and listed in the Components rail. |
+| Create component | Promotes the selection to a `CanvasComponent` — a self-contained SVG — persisted in the document. The packed layers then read as that component in the Canvas tree. |
 | Create component with chat | A small prompt box **anchored where you right-clicked**, in the style of VS Code's inline chat: one line in, one component out, placed at that point. It calls `design:quick-generate`, a **one-shot completion** using the model configured in app settings — deliberately not the agent loop, so it runs no tools, writes no files, and never enters the visible transcript. |
 | Show/Hide, Lock/Unlock, Flip H/V | Apply to screens (`CanvasNode` flags) and annotations alike, across the whole selection. |
 
