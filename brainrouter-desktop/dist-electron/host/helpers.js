@@ -30,6 +30,12 @@ export { exec, execFile, spawn };
  */
 export function scrubCliSecrets(cli) {
     const c = (cli && typeof cli === 'object' ? { ...cli } : {});
+    if (c.account && typeof c.account === 'object') {
+        const account = { ...c.account };
+        for (const key of ['jwt', 'refreshToken', 'accessToken', 'apiKey'])
+            delete account[key];
+        c.account = account;
+    }
     if (c.webSearch && typeof c.webSearch === 'object') {
         const webSearch = { ...c.webSearch };
         if (typeof webSearch.serperApiKey === 'string' && webSearch.serperApiKey)
@@ -179,18 +185,21 @@ export function createSecretBridge(port) {
         return undefined;
     let seq = 0;
     const pending = new Map();
+    const request = (op, key, value) => {
+        const id = `sec_${++seq}`;
+        port.postMessage({ kind: 'secret-request', id, op, key, ...(value !== undefined ? { value } : {}) });
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error('Secret operation timed out waiting for Electron main.'));
+            }, 10_000);
+            pending.set(id, { resolve, reject, timer });
+        });
+    };
     return {
-        get(key) {
-            const id = `sec_${++seq}`;
-            port.postMessage({ kind: 'secret-request', id, op: 'get', key });
-            return new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    pending.delete(id);
-                    reject(new Error('Secret lookup timed out waiting for Electron main.'));
-                }, 10_000);
-                pending.set(id, { resolve, reject, timer });
-            });
-        },
+        get: (key) => request('get', key),
+        set: async (key, value) => { await request('set', key, value); },
+        delete: async (key) => { await request('delete', key); },
         handleMessage(message) {
             if (!message || typeof message !== 'object')
                 return false;

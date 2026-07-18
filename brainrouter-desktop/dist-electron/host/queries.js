@@ -1,5 +1,5 @@
 import { shellQuoteArg } from '../shellQuote.js';
-import { brainRouterAccountHeaders, createGithubTrackProxyFetch, createGitlabTrackProxyFetch, fetchAccountConnectorStatuses, fetchAutomationAccountStatus, fetchGithubAccountStatus, resolveBrainRouterAccountApi, resolveBrainRouterAccountContext, resolveDesktopAccountIdentity, startAccountConnectorOAuth, } from '../accountIntegration.js';
+import { brainRouterAccountHeaders, createGithubTrackProxyFetch, createGitlabTrackProxyFetch, fetchAccountConnectorStatuses, fetchAutomationAccountStatus, fetchGithubAccountStatus, resolveBrainRouterAccountApi, resolveBrainRouterAccountContext, resolveDesktopAccountIdentity, startAccountConnectorOAuth, timeoutFetch, } from '../accountIntegration.js';
 // host/helpers — pure, closure-free helpers (config scrubbing, Track↔GitHub
 // normalization, computer-use/secret bridges, endpoint model probing, transcript
 // row reconstruction) extracted verbatim from this file.
@@ -13,10 +13,10 @@ import QRCode from 'qrcode';
 // Deep imports into the CLI's built runtime (no "exports" field = allowed).
 // Extracting a proper @kinqs/brainrouter-agent package is tracked for 0.4.16.
 import { callOpenAI } from '@kinqs/brainrouter-core/agent';
-// UI-TEST fusion — story prompt/validation helpers + the driver step types the
-// uitest:* handlers below use. The host instance itself arrives via ctx.uitest.
-import { buildStoryPrompt, validateStories, FlowStepSchema, DeviceSchema } from '@kinqs/brainrouter-core/uitest';
-// IPC boundary: the uitest:* channel is agent-reachable, so validate every input.
+// BROWSER — story prompt/validation helpers + the driver step types the
+// browser:* handlers below use. The host instance itself arrives via ctx.browser.
+import { buildStoryPrompt, validateStories, FlowStepSchema, DeviceSchema } from '@kinqs/brainrouter-core/browser';
+// IPC boundary: the browser:* channel is agent-reachable, so validate every input.
 import { isLoopbackHttpSrc } from '../webviewPolicy.js';
 import { CLI_CONFIG_SCHEMA, findConfigSchemaField, loadConfig, saveConfig, getCliKnobs, resolveCliKnobs, _resetCliKnobsCache, applyRuleEdit, setConfigValueAtPath, } from '@kinqs/brainrouter-core/config';
 import { aggregateCatalog, buildModelRegistry, getRouterPolicy } from '@kinqs/brainrouter-core/router';
@@ -112,7 +112,7 @@ import { localToolSpecsFromExecutors, isProtectedCoreTool } from '@kinqs/brainro
 import { readRun } from '@kinqs/brainrouter-core/workflow';
 import { desktopSessionModePatchFromArgs, mergeSessionModePrefs } from '../sessionModeBridge.js';
 export function buildQueries(ctx) {
-    const { uitest, design, workspaceRoot, wsGit, fileListCache, listWorkspaceFilesCached, send, config, mcpClient, callBrainAtlas, agent, llmForSession, syncActiveSessionLlm, spawnTaskAgent, taskEventView, emitTaskEvent, taskProgress, goalStrikes, captureRequirementNote, captureAnnotationNote, captureAnnotationExportNote, captureArtifactNote, ptyRegistry, hostedAgents, fanoutManager, remoteWorktrees, mobileRelay, modelsCacheByKey, isoNow, runReview, runReviewTask, reviewSnapshot, runPlanRevisionTask, ghText, ghJson, githubConnectorToken, githubTokenJson, readTrackPrStatus, validateGithubConnector, indexConnectorMemory, runConnector, syncConnectorPermissions, createTrackDraftPr, importTrackIssuesFromGh, mergeCurrentTrackPr, submitTrackPrReview, fixCurrentTrackPrChecks, getActiveAgent, getLlm, setLlm, getPrCache, setPrCache, getPrStatusMapCache, setPrStatusMapCache, resetGhEnvCache, } = ctx;
+    const { browser, devServers, design, workspaceRoot, wsGit, fileListCache, listWorkspaceFilesCached, send, config, secretBridge, mcpClient, callBrainAtlas, agent, llmForSession, refreshAccountModelCatalog, peekAccountModelCatalog, syncActiveSessionLlm, spawnTaskAgent, taskEventView, emitTaskEvent, taskProgress, goalStrikes, captureRequirementNote, captureAnnotationNote, captureAnnotationExportNote, captureArtifactNote, ptyRegistry, hostedAgents, fanoutManager, remoteWorktrees, mobileRelay, remoteAccess, modelsCacheByKey, isoNow, runReview, runReviewTask, reviewSnapshot, runPlanRevisionTask, ghText, ghJson, githubConnectorToken, githubTokenJson, readTrackPrStatus, validateGithubConnector, indexConnectorMemory, runConnector, syncConnectorPermissions, createTrackDraftPr, importTrackIssuesFromGh, mergeCurrentTrackPr, submitTrackPrReview, fixCurrentTrackPrChecks, getActiveAgent, getLlm, setLlm, getPrCache, setPrCache, getPrStatusMapCache, setPrStatusMapCache, resetGhEnvCache, } = ctx;
     let runtimeRunnerClient = null;
     let runtimeRunnerRemoteUrl = '';
     const getRuntimeRunnerClient = () => {
@@ -160,6 +160,23 @@ export function buildQueries(ctx) {
                 ...(connector?.account ? { login: connector.account } : {}),
                 ...(connector?.error || status.error ? { error: connector?.error ?? status.error } : {}),
             },
+        };
+    };
+    // PERF — the connector document/permission stores can be large. Keep their
+    // counts and previews out of the app-wide config snapshot and only scan them
+    // when Settings -> Data connectors is actually visible.
+    const connectorSnapshot = () => {
+        const items = listConnectors(workspaceRoot);
+        return {
+            catalog: listConnectorCatalog(),
+            items,
+            documentCounts: Object.fromEntries(items.map((connector) => [connector.id, countConnectorDocuments(workspaceRoot, { connectorId: connector.id })])),
+            permissionCounts: Object.fromEntries(items.map((connector) => [connector.id, countConnectorPermissions(workspaceRoot, { connectorId: connector.id })])),
+            runPreviews: Object.fromEntries(items.map((connector) => [connector.id, listConnectorRuns(workspaceRoot, connector.id).slice(0, 3)])),
+            documentPreviews: Object.fromEntries(items.map((connector) => [
+                connector.id,
+                retrieveConnectorSlimDocuments(workspaceRoot, { connectorId: connector.id, limit: 3, maxSnippetChars: 180 }),
+            ])),
         };
     };
     return {
@@ -239,6 +256,7 @@ export function buildQueries(ctx) {
             const status = typeof args.status === 'string' ? args.status : undefined;
             return { connectors: listConnectors(workspaceRoot, { source, status }) };
         },
+        'connectors-snapshot': connectorSnapshot,
         // ADR-016 C5 — migrate this workspace's LOCAL connectors to the signed-in
         // backend (server-only model). Pushes the non-secret definition of each local
         // connector to POST /api/connectors; credentials are NOT shipped — the user
@@ -692,6 +710,7 @@ export function buildQueries(ctx) {
             return {
                 sessionKey: getActiveAgent().sessionKey,
                 model: getActiveAgent().getModel?.() ?? current.model,
+                provider: current.provider,
                 workspaceRoot,
                 username: identity.username,
                 accountSignedIn: identity.signedIn,
@@ -1937,7 +1956,7 @@ export function buildQueries(ctx) {
         'schedule-toggle': (a) => ({ ok: setScheduleEnabled(workspaceRoot, String(a.id ?? ''), a.enabled !== false), enabled: a.enabled !== false }),
         // DESK-4c — one snapshot powering the whole Settings dialog. All values
         // come from the stores the CLI itself reads/writes.
-        'config-snapshot': () => {
+        'config-snapshot': async () => {
             const fresh = loadConfig();
             setLlm(fresh.llm ?? getLlm());
             syncActiveSessionLlm(getLlm());
@@ -1948,6 +1967,14 @@ export function buildQueries(ctx) {
             const defaultProviderName = defaultProviderMatch.name;
             const resolvedKnobs = resolveCliKnobs(fresh);
             const baseName = fresh.providers?.base ? 'base-config' : 'base';
+            // PERF — read the last-known managed catalog SYNCHRONOUSLY so BYOK/router
+            // models render immediately even while the BrainRouter account is loading or
+            // signed out; refresh it in the BACKGROUND. That refresh also keeps a first-
+            // class `brainrouter` provider synced into config.providers (Phase B — so the
+            // router auto-routes across BrainRouter AND the user's own providers), deduped
+            // from the picker's BYOK catalog below. Not awaited → never blocks the snapshot.
+            const accountModels = peekAccountModelCatalog();
+            void refreshAccountModelCatalog();
             const routerRegistry = buildModelRegistry({ ...(fresh.providers ?? {}), ...(fresh.llm ? { [baseName]: fresh.llm } : {}) }, {
                 aliases: resolvedKnobs.router.aliases,
                 chain: [...resolvedKnobs.router.chain, ...resolvedKnobs.fallbackModels, ...(fresh.llm ? [`${baseName}/${fresh.llm.model}`] : [])],
@@ -1964,6 +1991,7 @@ export function buildQueries(ctx) {
                 model: fresh.llm?.model ?? getLlm().model,
                 provider: fresh.llm?.provider ?? getLlm().provider,
                 endpoint: fresh.llm?.endpoint ?? null,
+                accountModels,
                 fallbackModel: cli?.fallbackModel ?? null,
                 workspaceRoot,
                 sandbox: cli?.sandbox ?? 'off',
@@ -1976,13 +2004,6 @@ export function buildQueries(ctx) {
                 connectors: {
                     catalog: listConnectorCatalog(),
                     items: connectorItems,
-                    documentCounts: Object.fromEntries(connectorItems.map((connector) => [connector.id, countConnectorDocuments(workspaceRoot, { connectorId: connector.id })])),
-                    permissionCounts: Object.fromEntries(connectorItems.map((connector) => [connector.id, countConnectorPermissions(workspaceRoot, { connectorId: connector.id })])),
-                    runPreviews: Object.fromEntries(connectorItems.map((connector) => [connector.id, listConnectorRuns(workspaceRoot, connector.id).slice(0, 3)])),
-                    documentPreviews: Object.fromEntries(connectorItems.map((connector) => [
-                        connector.id,
-                        retrieveConnectorSlimDocuments(workspaceRoot, { connectorId: connector.id, limit: 3, maxSnippetChars: 180 }),
-                    ])),
                 },
                 permissionRules: { allow: cli?.permissions?.allow ?? [], deny: cli?.permissions?.deny ?? [] },
                 hooks: readHooks(workspaceRoot),
@@ -2020,8 +2041,11 @@ export function buildQueries(ctx) {
                 routerCatalog: {
                     enabled: resolvedKnobs.router.enabled,
                     primaryChain: resolvedKnobs.router.chain,
-                    canonical: aggregateCatalog(routerRegistry, { prefix: 'canonical' }),
-                    bare: aggregateCatalog(routerRegistry, { prefix: 'bare' }),
+                    // BrainRouter is routable (registry above) but hidden from the BYOK
+                    // catalog — the "BrainRouter managed" menu owns its display, so it
+                    // never appears twice in the picker.
+                    canonical: aggregateCatalog(routerRegistry, { prefix: 'canonical' }).filter((item) => item.provider !== 'brainrouter'),
+                    bare: aggregateCatalog(routerRegistry, { prefix: 'bare' }).filter((item) => !(item.providers ?? []).includes('brainrouter')),
                     aliases: aggregateCatalog(routerRegistry, { prefix: 'alias' }),
                 },
                 routerStatus: getRouterPolicy().status(),
@@ -2106,6 +2130,7 @@ export function buildQueries(ctx) {
                 },
             };
         },
+        'account-model-catalog': () => refreshAccountModelCatalog(true),
         'usage-breakdown': () => buildUsageBreakdown({ parent: getActiveAgent().sessionUsage, children: [], offload: undefined, prefixStability: getActiveAgent().getPrefixStability() }),
         // WS10 — persistent cross-session usage history (day-bucketed), for the
         // contributions-style heatmap + range totals in the Usage panel.
@@ -3142,6 +3167,13 @@ export function buildQueries(ctx) {
             return mobileRelay.status();
         },
         'mobile-relay-pairing': async (args) => {
+            // Migration cutover (spec §9 / Task 25): account-based enrollment + the
+            // broker is the primary path. Legacy LAN/QR pairing stays available for
+            // ONE migration release behind cli.remote.legacyLanPairing (default off).
+            const remoteConfig = loadConfig().cli?.remote;
+            if (remoteConfig?.legacyLanPairing !== true) {
+                return { error: 'legacy-pairing-disabled', message: 'QR pairing is retired. Sign in on your phone (Desktops tab) to connect — or set cli.remote.legacyLanPairing=true during migration.' };
+            }
             const scopes = Array.isArray(args.scopes) ? args.scopes.map(String).filter((scope) => ['monitor', 'control', 'approve'].includes(scope)) : ['monitor', 'control'];
             const payload = mobileRelay.createPairing(scopes);
             const encoded = JSON.stringify(payload);
@@ -3149,23 +3181,40 @@ export function buildQueries(ctx) {
             return { payload, qrDataUrl };
         },
         'mobile-relay-revoke': (args) => ({ ok: mobileRelay.revoke(String(args.deviceId ?? '')) }),
+        // Account-based remote access (spec §9, Task 23) — explicit opt-in
+        // enrollment + outbound broker connections. The account bearer and the
+        // rotating device refresh token never reach the renderer or the wire.
+        'remote-access-status': () => ({ enrolled: remoteAccess.isEnrolled(), deviceId: remoteAccess.deviceId() }),
+        'remote-access-enroll': async () => {
+            const result = await remoteAccess.enroll();
+            return { ok: true, deviceId: result.deviceId };
+        },
+        'remote-access-approve-grant': async (args) => ({ ok: await remoteAccess.approveGrant(String(args.grantId ?? '')) }),
+        'remote-access-connect': async (args) => {
+            const scopes = Array.isArray(args.scopes)
+                ? args.scopes.map(String).filter((scope) => ['monitor', 'control', 'approve'].includes(scope))
+                : ['monitor'];
+            await remoteAccess.connect(String(args.grantId ?? ''), scopes);
+            return { ok: true };
+        },
+        'remote-access-stop': () => { remoteAccess.stop(); return { ok: true }; },
         // WS2 2.4 / WS6 6.3 — stop a background shell (e.g. a dev server an agent
         // started) from the Background-tasks panel. Kills the whole process group.
         'action:kill-bgshell': (args) => ({ ok: killBackgroundShell(String(args.id ?? '')) }),
-        // UI-TESTING (P4) — the panel's controls (extract / set-url / run / device /
+        // BROWSER — the panel's controls (extract / set-url / run / device /
         // stop). Every command routes through the shared command layer, never a
         // backend directly. They ride the query channel like the other host actions.
-        'uitest:extract': (args) => {
+        'browser:extract': (args) => {
             try {
                 const only = Array.isArray(args.only) ? args.only.map(String) : undefined;
-                return uitest.extract({ only: only && only.length ? only : undefined, broad: !!args.broad });
+                return browser.extract({ only: only && only.length ? only : undefined, broad: !!args.broad });
             }
             catch (err) {
                 return { error: err instanceof Error ? err.message : String(err) };
             }
         },
-        'uitest:manifest': () => uitest.manifest(),
-        'uitest:set-url': (args) => {
+        'browser:manifest': () => browser.manifest(),
+        'browser:set-url': (args) => {
             const url = typeof args.url === 'string' ? args.url.trim() : '';
             // Only a LOOPBACK http(s) URL may be loaded into the webview. An empty
             // string clears the base; reject javascript:/data:/remote schemes an
@@ -3173,24 +3222,24 @@ export function buildQueries(ctx) {
             if (url && !isLoopbackHttpSrc(url)) {
                 return { ok: false, url: '', error: 'Only loopback http(s) URLs are allowed (localhost / 127.0.0.1 / [::1]).' };
             }
-            return uitest.setUrl(url);
+            return browser.setUrl(url);
         },
-        'uitest:run-command': async (args) => {
+        'browser:run-command': async (args) => {
             // Validate against the step schema — action ∈ {navigate,tap,type,assertVisible}
             // and `type` requires text. An agent must not drive an unknown action.
             const parsed = FlowStepSchema.safeParse(args.step);
             if (!parsed.success)
                 return { result: null, error: 'invalid UI-test step (unknown action or missing field)' };
-            return uitest.runCommand(parsed.data);
+            return browser.runCommand(parsed.data);
         },
-        'uitest:set-device': async (args) => {
+        'browser:set-device': async (args) => {
             const parsed = DeviceSchema.safeParse(args.device);
             if (!parsed.success)
                 return { result: null, error: 'invalid device (need a valid name + numeric width/height)' };
-            return uitest.setDevice(parsed.data);
+            return browser.setDevice(parsed.data);
         },
-        'uitest:list-flows': () => uitest.listFlows(),
-        'uitest:save-flow': (args) => {
+        'browser:list-flows': () => browser.listFlows(),
+        'browser:save-flow': (args) => {
             // Validate every step against the schema before it's written to YAML —
             // an agent must not persist malformed/unexpected step structures.
             const raw = Array.isArray(args.steps) ? args.steps : [];
@@ -3201,29 +3250,29 @@ export function buildQueries(ctx) {
                     return { ok: false, name: typeof args.name === 'string' ? args.name : 'flow', error: 'one or more flow steps are invalid (unknown action or missing field)' };
                 steps.push(p.data);
             }
-            return uitest.saveFlow(typeof args.name === 'string' ? args.name : 'flow', steps);
+            return browser.saveFlow(typeof args.name === 'string' ? args.name : 'flow', steps);
         },
-        'uitest:run-flow': async (args) => uitest.runFlow({
+        'browser:run-flow': async (args) => browser.runFlow({
             name: typeof args.name === 'string' ? args.name : undefined,
             steps: Array.isArray(args.steps) ? args.steps : undefined,
         }),
         // UI STORIES — named user journeys: list/save on disk, LLM-suggest from the
         // current screen map, and ensure the app is hosted before a run.
-        'uitest:list-stories': () => uitest.listStories(),
-        'uitest:save-story': (args) => {
+        'browser:list-stories': () => browser.listStories(),
+        'browser:save-story': (args) => {
             // Agent-supplied stories pass the SAME validation as LLM-suggested ones:
             // every target must exist in the current map, ≥2 valid steps, and titled.
-            const manifest = uitest.manifest().manifest;
+            const manifest = browser.manifest().manifest;
             if (!manifest)
                 return { ok: false, error: 'No screen map yet — extract one before saving a story.' };
             const [story] = validateStories(args.story ? [args.story] : [], manifest);
             if (!story)
                 return { ok: false, error: 'story failed validation (unknown targets, fewer than 2 valid steps, or missing title).' };
-            return uitest.saveStory(story);
+            return browser.saveStory(story);
         },
-        'uitest:suggest-stories': async () => {
+        'browser:suggest-stories': async () => {
             try {
-                const manifest = uitest.manifest().manifest;
+                const manifest = browser.manifest().manifest;
                 if (!manifest || manifest.screens.length === 0)
                     return { error: 'No screen map yet — Extract first.' };
                 const llm = llmForSession(getActiveAgent().sessionKey);
@@ -3236,19 +3285,19 @@ export function buildQueries(ctx) {
                 const raw = typeof argsText === 'string' && argsText.trim() ? argsText : (resp?.content ?? '');
                 const stories = validateStories(extractAtlasJson(raw) ?? raw, manifest);
                 for (const s of stories)
-                    uitest.saveStory(s);
+                    browser.saveStory(s);
                 return { stories, count: stories.length };
             }
             catch (err) {
                 return { error: err instanceof Error ? err.message : String(err) };
             }
         },
-        'uitest:ensure-app': async (args) => uitest.ensureApp({
+        'browser:ensure-app': async (args) => browser.ensureApp({
             name: typeof args.name === 'string' ? args.name : undefined,
             url: typeof args.url === 'string' ? args.url : undefined,
         }),
         // Save a Browser-panel screenshot to disk (`.brainrouter/ui-tests/screenshots/`).
-        'uitest:save-screenshot': (args) => uitest.saveScreenshot({
+        'browser:save-screenshot': (args) => browser.saveScreenshot({
             dataUrl: typeof args.dataUrl === 'string' ? args.dataUrl : undefined,
             base64: typeof args.base64 === 'string' ? args.base64 : undefined,
             name: typeof args.name === 'string' ? args.name : undefined,
@@ -3256,9 +3305,9 @@ export function buildQueries(ctx) {
         // Turn a finished story run into a markdown report on disk, then register it
         // as a path-backed Artifact Record (shared artifacts.json — reuses the same
         // store the CLI + Artifacts panel already use).
-        'uitest:run-report': async (args) => {
+        'browser:run-report': async (args) => {
             const story = (args.story && typeof args.story === 'object' ? args.story : {});
-            const out = uitest.runReport({
+            const out = browser.runReport({
                 story,
                 baseUrl: typeof args.baseUrl === 'string' ? args.baseUrl : undefined,
                 results: Array.isArray(args.results) ? args.results : [],
@@ -3281,7 +3330,6 @@ export function buildQueries(ctx) {
                 return { ...out, artifactError: err instanceof Error ? err.message : String(err) };
             }
         },
-        'uitest:driver-stop': async () => uitest.stopDriver(),
         'design:list-prototypes': () => {
             try {
                 return design.listPrototypes();
@@ -3385,6 +3433,20 @@ export function buildQueries(ctx) {
                 return { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
         },
+        'browser:driver-stop': async () => browser.stopDriver(),
+        // SERVERS — the Servers panel lists/starts/stops launch.json dev servers and
+        // can append a new (validated) config. All guards live in the registry; the
+        // query layer only coerces argument types (matches how browser:* delegates).
+        'servers:list': () => ({ servers: devServers.list() }),
+        'servers:start': (args) => devServers.start(String(args.name ?? '')),
+        'servers:stop': (args) => ({ ...devServers.stop(String(args.name ?? '')) }),
+        'servers:add': (args) => devServers.addConfig({
+            name: String(args.name ?? ''),
+            exe: String(args.exe ?? 'npm'),
+            args: Array.isArray(args.args) ? args.args.map(String) : [],
+            port: Number(args.port) || 0,
+        }),
+        'servers:logs': (args) => ({ lines: devServers.tail(String(args.name ?? ''), 200) }),
         // Actions — host-side mutations the Settings dialog / palette trigger.
         // They ride the query channel (free-form names, result routing by id).
         'action:clear': () => { getActiveAgent().clearHistory(); return { ok: true }; },
@@ -3533,7 +3595,7 @@ export function buildQueries(ctx) {
                 return { ok: false, error: 'Email and password are required.' };
             let res;
             try {
-                res = await fetch(`${baseUrl}/api/auth/signin`, {
+                res = await timeoutFetch(`${baseUrl}/api/auth/signin`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, password }),
                 });
@@ -3555,6 +3617,20 @@ export function buildQueries(ctx) {
             const apiKey = String(data.apiKey ?? '').trim();
             if (!apiKey)
                 return { ok: false, error: 'Sign-in succeeded but returned no API key.' };
+            if (!secretBridge)
+                return { ok: false, error: 'Secure credential storage is unavailable. Sign-in was not saved.' };
+            const accountBearer = String(data.jwt ?? '').trim() || apiKey;
+            try {
+                await secretBridge.set('account:access-token', accountBearer);
+                const refreshToken = String(data.refreshToken ?? '').trim();
+                if (refreshToken)
+                    await secretBridge.set('account:refresh-token', refreshToken);
+                else
+                    await secretBridge.delete('account:refresh-token');
+            }
+            catch (error) {
+                return { ok: false, error: `Secure credential storage failed: ${error instanceof Error ? error.message : String(error)}` };
+            }
             const isBrain = (id, s) => s?.identity === 'brainrouter' || /^brainrouter/i.test(id);
             const fresh = loadConfig();
             fresh.servers = fresh.servers ?? {};
@@ -3565,22 +3641,25 @@ export function buildQueries(ctx) {
             fresh.servers[brainId] = { type: 'http', url: mcpUrl, apiKey, identity: 'brainrouter' };
             fresh.cli = fresh.cli ?? {};
             fresh.cli.brainUrl = mcpUrl;
-            // jwt + refreshToken stay host-side (not returned to the renderer) — used only
-            // for account management like "log out of all devices" (rotate-key needs a jwt).
-            fresh.cli.account = { ...account, prevBrain, jwt: String(data.jwt ?? ''), refreshToken: String(data.refreshToken ?? '') };
+            // Account bearer + refresh credentials live only in Electron safeStorage.
+            fresh.cli.account = { ...account, prevBrain };
             saveConfig(fresh);
             _resetCliKnobsCache();
-            try {
-                await mcpClient.disconnectOne(brainId);
-            }
-            catch { /* not connected */ }
-            try {
-                await mcpClient.connectOne(brainId, fresh.servers[brainId], loadConfig().llm ?? getLlm(), 5_000);
-            }
-            catch {
-                return { ok: false, error: `Signed in, but couldn't reach the brain at ${mcpUrl}. Is the backend running?` };
-            }
-            void ensureBrainSession(mcpClient, workspaceRoot); // show this device on the Account page
+            // Credential persistence is the sign-in commit point. MCP reconnect and
+            // model-catalog hydration are independent background work: neither may
+            // keep the Account screen spinning or hide already-usable BYOK models.
+            void (async () => {
+                try {
+                    await mcpClient.disconnectOne(brainId);
+                }
+                catch { /* not connected */ }
+                try {
+                    await mcpClient.connectOne(brainId, fresh.servers[brainId], loadConfig().llm ?? getLlm(), 5_000);
+                    await ensureBrainSession(mcpClient, workspaceRoot); // show this device on the Account page
+                }
+                catch { /* normal offline degradation; reconnect remains best-effort */ }
+            })();
+            void refreshAccountModelCatalog(true);
             return { ok: true, account };
         },
         'action:auth-signout': async () => {
@@ -3611,27 +3690,44 @@ export function buildQueries(ctx) {
                     await mcpClient.connectOne(brainId, fresh.servers[brainId], loadConfig().llm ?? getLlm(), 5_000);
             }
             catch { /* embedded brain reconnects on next boot */ }
+            if (secretBridge) {
+                await Promise.allSettled([
+                    secretBridge.delete('account:access-token'),
+                    secretBridge.delete('account:refresh-token'),
+                ]);
+            }
+            await refreshAccountModelCatalog(true);
             return { ok: true };
         },
         'auth-status': () => {
-            const account = loadConfig().cli?.account;
+            const fresh = loadConfig();
+            const account = fresh.cli?.account;
+            const connected = resolveBrainRouterAccountApi(fresh);
             return account
                 ? { signedIn: true, account: { url: account.url ?? '', userId: account.userId ?? '', displayName: account.displayName ?? '', email: account.email ?? '' } }
-                : { signedIn: false, account: null };
+                : connected
+                    ? { signedIn: true, account: { url: connected.baseUrl, userId: '', displayName: 'BrainRouter account', email: '' } }
+                    : { signedIn: false, account: null };
         },
         // Account overview — the org id + the account's active sessions/devices, read
         // from the backend with the signed-in apiKey (both endpoints are requireAnyAuth).
         'account-overview': async () => {
-            const cfg = loadConfig();
-            const base = String(cfg.cli?.account?.url ?? '').replace(/\/+$/, '');
-            const bId = Object.keys(cfg.servers ?? {}).find((k) => (cfg.servers[k]?.identity === 'brainrouter') || /^brainrouter/i.test(k));
-            const apiKey = bId ? String(cfg.servers[bId]?.apiKey ?? '') : '';
-            if (!base || !apiKey)
+            const account = resolveBrainRouterAccountApi(loadConfig());
+            if (!account)
                 return { signedIn: false, sessions: [] };
-            const h = { Authorization: `Bearer ${apiKey}` };
+            const h = { Authorization: `Bearer ${account.apiKey}` };
             const out = { signedIn: true, sessions: [] };
+            // These are independent account cards. Fetch them concurrently with the
+            // same bounded transport as the catalog so one unhealthy endpoint cannot
+            // hold the entire signed-in settings view hostage.
+            const [orgResult, sessionResult] = await Promise.allSettled([
+                timeoutFetch(`${account.baseUrl}/api/orgs`, { headers: h }),
+                timeoutFetch(`${account.baseUrl}/api/sessions?includeStale=true`, { headers: h }),
+            ]);
             try {
-                const r = await fetch(`${base}/api/orgs`, { headers: h });
+                if (orgResult.status !== 'fulfilled')
+                    throw orgResult.reason;
+                const r = orgResult.value;
                 if (r.ok) {
                     const j = await r.json();
                     const org = (j.orgs ?? []).find((o) => o.isDefault) ?? (j.orgs ?? [])[0];
@@ -3645,7 +3741,9 @@ export function buildQueries(ctx) {
             }
             catch { /* org id optional */ }
             try {
-                const r = await fetch(`${base}/api/sessions?includeStale=true`, { headers: h });
+                if (sessionResult.status !== 'fulfilled')
+                    throw sessionResult.reason;
+                const r = sessionResult.value;
                 if (r.ok) {
                     const j = await r.json();
                     out.sessions = (j.sessions ?? []).map((s) => ({ clientKind: s.clientKind ?? 'unknown', workspaceRoot: s.workspaceRoot, startedAt: s.startedAt, lastHeartbeatAt: s.lastHeartbeatAt }));
@@ -3714,26 +3812,31 @@ export function buildQueries(ctx) {
         // THIS device so it stays signed in. Refreshes the short-lived jwt first.
         'action:logout-all-devices': async () => {
             const cfg = loadConfig();
-            const base = String(cfg.cli?.account?.url ?? '').replace(/\/+$/, '');
+            const account = resolveBrainRouterAccountApi(cfg);
+            const base = account?.baseUrl ?? '';
             const bId = Object.keys(cfg.servers ?? {}).find((k) => (cfg.servers[k]?.identity === 'brainrouter') || /^brainrouter/i.test(k));
-            const refreshToken = String(cfg.cli?.account?.refreshToken ?? '');
-            let jwt = String(cfg.cli?.account?.jwt ?? '');
+            const [storedAccess, storedRefresh] = secretBridge
+                ? await Promise.all([
+                    secretBridge.get('account:access-token').catch(() => undefined),
+                    secretBridge.get('account:refresh-token').catch(() => undefined),
+                ])
+                : [undefined, undefined];
+            const refreshToken = String(storedRefresh ?? '');
+            let jwt = String(storedAccess ?? '');
             if (!base || !bId || (!jwt && !refreshToken))
                 return { ok: false, error: 'Sign out and back in, then try again.' };
             if (refreshToken) {
                 try {
-                    const rr = await fetch(`${base}/api/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) });
+                    const rr = await timeoutFetch(`${base}/api/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) });
                     if (rr.ok) {
                         const rj = await rr.json();
                         if (rj.jwt)
                             jwt = rj.jwt;
-                        const f = loadConfig();
-                        if (f.cli?.account) {
+                        if (secretBridge) {
                             if (rj.jwt)
-                                f.cli.account.jwt = rj.jwt;
+                                await secretBridge.set('account:access-token', rj.jwt);
                             if (rj.refreshToken)
-                                f.cli.account.refreshToken = rj.refreshToken;
-                            saveConfig(f);
+                                await secretBridge.set('account:refresh-token', rj.refreshToken);
                         }
                     }
                 }
@@ -3742,7 +3845,7 @@ export function buildQueries(ctx) {
             if (!jwt)
                 return { ok: false, error: 'Sign out and back in, then try again.' };
             try {
-                const r = await fetch(`${base}/api/auth/rotate-key`, { method: 'POST', headers: { Authorization: `Bearer ${jwt}` } });
+                const r = await timeoutFetch(`${base}/api/auth/rotate-key`, { method: 'POST', headers: { Authorization: `Bearer ${jwt}` } });
                 if (!r.ok)
                     return { ok: false, error: r.status === 401 ? 'Sign out and back in, then try again.' : `Failed (HTTP ${r.status})` };
                 const newKey = String((await r.json()).apiKey ?? '');
@@ -3795,6 +3898,7 @@ export function buildQueries(ctx) {
         },
         'connector-oauth-start': async (args) => {
             const source = String(args.source ?? '').trim();
+            const connectorId = typeof args.connectorId === 'string' && args.connectorId.trim() ? args.connectorId.trim() : undefined;
             if (!['gitlab', 'slack', 'google-drive', 'gmail', 'notion', 'linear'].includes(source))
                 return { ok: false, error: 'Unsupported OAuth connector source.' };
             if (!resolveBrainRouterAccountApi(loadConfig()))
@@ -3803,10 +3907,64 @@ export function buildQueries(ctx) {
                 const account = await resolveBrainRouterAccountContext(loadConfig());
                 if (!account)
                     return { ok: false, error: 'No active BrainRouter organization.' };
-                return await startAccountConnectorOAuth(account, source);
+                return await startAccountConnectorOAuth(account, source, undefined, connectorId);
             }
             catch (e) {
                 return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        // Multi-account (work + personal + …). Each connector IS one external
+        // account; the sealed credential stays server-side, so these only move
+        // labels, connected state, and the discovered account identity.
+        'connector-accounts': async (args) => {
+            const source = String(args.source ?? '').trim();
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { signedIn: false, accounts: [] };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { signedIn: false, accounts: [] };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/accounts`, { headers: brainRouterAccountHeaders(account), signal: AbortSignal.timeout(12_000) });
+                if (!r.ok)
+                    return { signedIn: true, accounts: [], error: `HTTP ${r.status}` };
+                return { signedIn: true, ...await r.json() };
+            }
+            catch (e) {
+                return { signedIn: true, accounts: [], error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'connector-account-add': async (args) => {
+            const source = String(args.source ?? '').trim();
+            const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : undefined;
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false, error: 'Sign in to BrainRouter first.' };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false, error: 'No active BrainRouter organization.' };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(source)}/accounts`, { method: 'POST', headers: brainRouterAccountHeaders(account, true), body: JSON.stringify(label ? { label } : {}), signal: AbortSignal.timeout(12_000) });
+                const d = await r.json();
+                return r.ok ? { ok: true, ...d } : { ok: false, error: String(d.error ?? `HTTP ${r.status}`) };
+            }
+            catch (e) {
+                return { ok: false, error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'action:connector-account-delete': async (args) => {
+            const id = String(args.id ?? '').trim();
+            if (!id)
+                return { ok: false, error: 'Missing connector id.' };
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false };
+                const r = await fetch(`${account.baseUrl}/api/connectors/${encodeURIComponent(id)}`, { method: 'DELETE', headers: brainRouterAccountHeaders(account), signal: AbortSignal.timeout(12_000) });
+                return { ok: r.ok };
+            }
+            catch {
+                return { ok: false };
             }
         },
         'action:connector-oauth-disconnect': async (args) => {
@@ -3894,14 +4052,17 @@ export function buildQueries(ctx) {
         },
         // Device flow (no client secret) — start returns a short code + the verify URL;
         // poll until GitHub reports the user authorized it.
-        'github-device-start': async () => {
+        'github-device-start': async (args) => {
             if (!resolveBrainRouterAccountApi(loadConfig()))
                 return { ok: false, error: 'Sign in to BrainRouter first.' };
             try {
                 const account = await resolveBrainRouterAccountContext(loadConfig());
                 if (!account)
                     return { ok: false, error: 'No active BrainRouter organization.' };
-                const r = await fetch(`${account.baseUrl}/api/connectors/github/device/start`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                // Multi-account: `connectorId` binds this device flow to a specific new
+                // account row instead of the shared primary GitHub token.
+                const connectorId = typeof args?.connectorId === 'string' && args.connectorId.trim() ? args.connectorId.trim() : undefined;
+                const r = await fetch(`${account.baseUrl}/api/connectors/github/device/start`, { method: 'POST', headers: brainRouterAccountHeaders(account, true), body: JSON.stringify(connectorId ? { connectorId } : {}) });
                 const d = await r.json();
                 if (!r.ok || !d.userCode)
                     return { ok: false, error: d.error || `HTTP ${r.status}` };
@@ -3923,6 +4084,20 @@ export function buildQueries(ctx) {
             }
             catch (e) {
                 return { status: 'error', error: e instanceof Error ? e.message : 'failed' };
+            }
+        },
+        'github-device-cancel': async () => {
+            if (!resolveBrainRouterAccountApi(loadConfig()))
+                return { ok: false };
+            try {
+                const account = await resolveBrainRouterAccountContext(loadConfig());
+                if (!account)
+                    return { ok: false };
+                const response = await fetch(`${account.baseUrl}/api/connectors/github/device/cancel`, { method: 'POST', headers: brainRouterAccountHeaders(account) });
+                return { ok: response.ok };
+            }
+            catch {
+                return { ok: false };
             }
         },
         // DESK-6m — per-chat context-menu actions (Pin / Mark completed / Rename /
