@@ -17,6 +17,7 @@ import {
   type AnnotationKind, type DesignAnnotation, type StagePoint, type StageRect,
 } from '../../lib/design/designAnnotations.js';
 import { cssForAnnotation, svgPaintFor } from '../../lib/design/annotationStyle.js';
+import { constrainDelta, passedThreshold } from '../../lib/design/dragGesture.js';
 import { DEFAULT_AUTO_LAYOUT, autoLayoutAnnotations } from '../../lib/design/designAutoLayout.js';
 import { flattenToPath, outlinePathFor, outlineStrokePath, traceMask, translatePath } from '../../lib/design/designOutline.js';
 import { DesignContextMenu, type MenuAction } from './DesignContextMenu.js';
@@ -55,7 +56,10 @@ function traceTextOutline(annotation: DesignAnnotation): string | null {
 
 type Gesture =
   | { kind: 'draw'; anchor: StagePoint; draw: AnnotationKind }
-  | { kind: 'move'; id: string; start: StagePoint; base: DesignAnnotation[] };
+  // `screen` is the pointer-down position in SCREEN pixels. The drag threshold
+  // is a screen distance, so it cannot be measured against `start`, which the
+  // zoom has already divided into stage units.
+  | { kind: 'move'; id: string; start: StagePoint; screen: { x: number; y: number }; base: DesignAnnotation[]; moved: boolean };
 
 /** Shift constrains a drawn shape to a square (a circle, for an ellipse). */
 function drawRect(anchor: StagePoint, point: StagePoint, constrain: boolean): StageRect {
@@ -181,14 +185,14 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
           const placed = list.map((a) => a.id === id ? { ...a, x: hit.x, y: hit.y } : a);
           onChange(placed);
           onSelect([id]);
-          gestureRef.current = { kind: 'move', id, start: p, base: placed };
+          gestureRef.current = { kind: 'move', id, start: p, screen: { x: e.clientX, y: e.clientY }, base: placed, moved: false };
           return;
         }
       }
       onSelect(e.shiftKey
         ? (selectedIds.includes(hit.id) ? selectedIds.filter((id) => id !== hit.id) : [...selectedIds, hit.id])
         : (selectedIds.includes(hit.id) ? [...selectedIds] : [hit.id]));
-      gestureRef.current = { kind: 'move', id: hit.id, start: p, base: annotations };
+      gestureRef.current = { kind: 'move', id: hit.id, start: p, screen: { x: e.clientX, y: e.clientY }, base: annotations, moved: false };
       return;
     }
     if (tool === 'text') {
@@ -214,10 +218,16 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     if (!g) return;
     const p = toStage(e.clientX, e.clientY);
     if (g.kind === 'draw') { setDraft({ rect: drawRect(g.anchor, p, e.shiftKey), kind: g.draw, ...dragFlip(g.anchor, p) }); return; }
+    // Below the threshold this is still a click on the shape, not a drag of it.
+    // Without the gate, the drift in an ordinary click moved the shape AND
+    // landed an undo step for a move the user never made.
+    if (!g.moved && !passedThreshold(e.clientX - g.screen.x, e.clientY - g.screen.y)) return;
+    g.moved = true;
     // Move from the pointer-down snapshot, not the live list — no drift. The
     // whole selection travels together, plus anything grouped with it.
-    const dx = p.x - g.start.x;
-    const dy = p.y - g.start.y;
+    const locked = constrainDelta(p.x - g.start.x, p.y - g.start.y, e.shiftKey);
+    const dx = locked.dx;
+    const dy = locked.dy;
     const moving = new Set(selectedIds.includes(g.id) ? selectedIds : [g.id]);
     for (const id of [...moving]) {
       const groupId = g.base.find((a) => a.id === id)?.groupId;
@@ -232,10 +242,11 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     const g = gestureRef.current;
     gestureRef.current = null;
     if (g?.kind === 'move') {
-      // Commit the drag as ONE undo step, now that it has finished.
+      // Commit the drag as ONE undo step, now that it has finished. A press
+      // that never crossed the threshold moved nothing, so it earns no step.
       const moved = movedRef.current;
       movedRef.current = null;
-      if (moved) onChange(moved);
+      if (moved && g.moved) onChange(moved);
       return;
     }
     if (!g || g.kind !== 'draw') return;

@@ -21,6 +21,7 @@ import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, togg
 import { MIN_SCREEN, isResizeHandle, resizeRect } from '../../lib/design/screenResize.js';
 import { useCanvasDocument } from '../../lib/design/useCanvasDocument.js';
 import { useCanvasFrames } from '../../lib/design/useCanvasFrames.js';
+import { constrainDelta, passedThreshold } from '../../lib/design/dragGesture.js';
 import type { CanvasNode } from '../../lib/design/canvasModel.js';
 import type { MeasuredElement } from '../../lib/design/designMeasure.js';
 import type { ConstraintBox } from '../../lib/design/designConstraints.js';
@@ -484,9 +485,17 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
       const start = { x: e.clientX, y: e.clientY, scale: viewRef.current.scale };
       let latest = nodes;
+      let dragging = false;
       const onMove = (ev: PointerEvent): void => {
-        const dx = (ev.clientX - start.x) / start.scale;
-        const dy = (ev.clientY - start.y) / start.scale;
+        const rawX = ev.clientX - start.x;
+        const rawY = ev.clientY - start.y;
+        // Below the threshold this is still a click. Moving now would nudge the
+        // screen by the drift in an ordinary trackpad click and persist it.
+        if (!dragging && !passedThreshold(rawX, rawY)) return;
+        dragging = true;
+        const locked = constrainDelta(rawX, rawY, ev.shiftKey);
+        const dx = locked.dx / start.scale;
+        const dy = locked.dy / start.scale;
         latest = nodes.map((item) => {
           const origin = origins.get(item.prototypeId);
           return origin ? { ...item, position: { x: snapTo(origin.x + dx, grid), y: snapTo(origin.y + dy, grid) } } : item;
@@ -495,7 +504,9 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       };
       const onUp = (): void => {
         setDragNodes(null);
-        saveNodes(latest);
+        // A click that never crossed the threshold moved nothing, so it has
+        // nothing to save — writing here rewrote the board on every selection.
+        if (dragging) saveNodes(latest);
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
       };
