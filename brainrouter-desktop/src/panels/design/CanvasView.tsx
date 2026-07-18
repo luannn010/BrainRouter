@@ -3,6 +3,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from '
 import { useCanvasFrames, type PrototypeFrame } from '../../lib/design/useCanvasFrames.js';
 import { useCanvasDocument } from '../../lib/design/useCanvasDocument.js';
 import { createCanvasDocument, layoutCanvasNodes, type CanvasNode, type CanvasPoint, type CanvasLayoutMode } from '../../lib/design/canvasModel.js';
+import { fitBounds, snapTo, wheelGesture, zoomAt } from '../../lib/design/canvasViewport.js';
 import { CanvasInspector } from './CanvasInspector.js';
 
 /** Frame geometry — one screen in a flow. */
@@ -13,12 +14,7 @@ const GAP_X = 96;
 const GAP_Y = 96;
 const PER_ROW = 4;
 
-const MIN_ZOOM = 0.15;
-const MAX_ZOOM = 2;
-
 type Pt = { x: number; y: number };
-
-const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
 /** Grid flow: left-to-right, wrapping every PER_ROW frames. */
 function frameOrigin(i: number): Pt {
@@ -115,6 +111,9 @@ export function CanvasView({ onOpenInDesigns }: { onOpenInDesigns: (id: string) 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [zoom, setZoom] = useState(0.5);
   const [pan, setPan] = useState<Pt>({ x: 48, y: 48 });
+  // The zoom callback reads the live pan without re-creating itself per pan.
+  const panRef = useRef(pan);
+  panRef.current = pan;
   const [selected, setSelected] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const nodeDragRef = useRef<{ id: string; x: number; y: number; start: CanvasPoint } | null>(null);
@@ -132,40 +131,36 @@ export function CanvasView({ onOpenInDesigns }: { onOpenInDesigns: (id: string) 
     const host = hostRef.current;
     if (!host) return;
     const { w, h } = worldSize(nodesForSize);
-    const cw = host.clientWidth - 64;
-    const ch = host.clientHeight - 64;
-    const z = clamp(Math.min(cw / w, ch / h), MIN_ZOOM, 1);
-    setZoom(z);
-    setPan({ x: (host.clientWidth - w * z) / 2, y: (host.clientHeight - h * z) / 2 });
+    const view = fitBounds({ x: 0, y: 0, w, h }, host.clientWidth, host.clientHeight, 32);
+    setZoom(view.scale);
+    setPan({ x: view.x, y: view.y });
   }, [nodesForSize]);
 
   // Fit once the first frame set lands.
   useEffect(() => { if (frames.length) fit(); }, [frames.length, fit]);
 
-  const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
+  const zoomAtPoint = useCallback((factor: number, cx: number, cy: number) => {
     setZoom((z) => {
-      const nz = clamp(z * factor, MIN_ZOOM, MAX_ZOOM);
-      if (nz === z) return z;
-      setPan((p) => ({ x: cx - (cx - p.x) * (nz / z), y: cy - (cy - p.y) * (nz / z) }));
-      return nz;
+      const next = zoomAt({ scale: z, x: panRef.current.x, y: panRef.current.y }, factor, cx, cy);
+      if (next.scale === z) return z;
+      setPan({ x: next.x, y: next.y });
+      return next.scale;
     });
   }, []);
 
   /** Buttons and +/- zoom about the viewport centre, so the view never lurches. */
   const zoomCenter = useCallback((factor: number) => {
     const host = hostRef.current;
-    if (host) zoomAt(factor, host.clientWidth / 2, host.clientHeight / 2);
-  }, [zoomAt]);
+    if (host) zoomAtPoint(factor, host.clientWidth / 2, host.clientHeight / 2);
+  }, [zoomAtPoint]);
 
   const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
     const host = hostRef.current;
     if (!host) return;
     const rect = host.getBoundingClientRect();
-    if (e.ctrlKey || e.metaKey) {
-      zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top);
-    } else {
-      setPan((p) => ({ x: p.x - (e.shiftKey ? e.deltaY : e.deltaX), y: p.y - (e.shiftKey ? 0 : e.deltaY) }));
-    }
+    const gesture = wheelGesture(e);
+    if (gesture.kind === 'zoom') zoomAtPoint(gesture.factor, e.clientX - rect.left, e.clientY - rect.top);
+    else setPan((p) => ({ x: p.x + gesture.dx, y: p.y + gesture.dy }));
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
@@ -191,7 +186,7 @@ export function CanvasView({ onOpenInDesigns }: { onOpenInDesigns: (id: string) 
     if (nodeDrag) {
       const raw = { x: nodeDrag.start.x + (e.clientX - nodeDrag.x) / zoom, y: nodeDrag.start.y + (e.clientY - nodeDrag.y) / zoom };
       const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
-      const next = { x: Math.round(raw.x / grid) * grid, y: Math.round(raw.y / grid) * grid };
+      const next = { x: snapTo(raw.x, grid), y: snapTo(raw.y, grid) };
       setDragPreview((current) => new Map(current).set(nodeDrag.id, next));
       return;
     }
