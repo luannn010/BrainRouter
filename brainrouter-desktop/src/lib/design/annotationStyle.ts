@@ -33,7 +33,7 @@ export const DEFAULT_STYLE: AnnotationStyle = {
 };
 
 /** Containers and strokes-only kinds start unfilled, as they do in Figma. */
-const UNFILLED: ReadonlySet<AnnotationKind> = new Set<AnnotationKind>(['frame', 'section', 'line', 'text']);
+const UNFILLED: ReadonlySet<AnnotationKind> = new Set<AnnotationKind>(['frame', 'section', 'line', 'text', 'component']);
 
 export function defaultStyleFor(kind: AnnotationKind): AnnotationStyle {
   return UNFILLED.has(kind) ? { ...DEFAULT_STYLE, fill: 'transparent' } : { ...DEFAULT_STYLE };
@@ -113,7 +113,8 @@ export function cssForAnnotation(annotation: DesignAnnotation): Record<string, s
   }
 
   // Shapes drawn as SVG carry their paint on the <svg> children, not the box.
-  if (annotation.kind === 'line' || annotation.kind === 'ellipse' || annotation.kind === 'polygon' || annotation.kind === 'star' || annotation.kind === 'path') {
+  // A component paints itself — a box behind it would just cover its markup.
+  if (annotation.kind === 'line' || annotation.kind === 'ellipse' || annotation.kind === 'polygon' || annotation.kind === 'star' || annotation.kind === 'path' || annotation.kind === 'component') {
     return css;
   }
 

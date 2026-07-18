@@ -102,7 +102,8 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
   onChange: (next: DesignAnnotation[], opts?: { transient?: boolean }) => void;
   onClipboardChange: (a: DesignAnnotation | null) => void;
   onCreateComponent: (members: DesignAnnotation[]) => void;
-  onQuickChat: () => void;
+  /** Both points: where to put the prompt box, and where to put the result. */
+  onQuickChat: (at: { x: number; y: number }, stage: StagePoint) => void;
   /** Fired once something has been drawn, so the tool can hand back to Select. */
   onCreated: () => void;
 }): React.ReactElement {
@@ -315,7 +316,9 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     }
     else if (action === 'outline-stroke' && target) bakeToPath([target], outlineStrokePath(target, ANNOTATION_STROKE), target.label || 'Outline');
     else if (action === 'create-component') onCreateComponent(members);
-    else if (action === 'create-component-chat') onQuickChat();
+    // The menu already recorded exactly where the right-click landed, in both
+    // spaces: client for the box, stage for the component it will place.
+    else if (action === 'create-component-chat') onQuickChat({ x: m.x, y: m.y }, m.point);
     else if (action === 'toggle-hidden') { onChange(annotations.map((a) => ids.includes(a.id) ? { ...a, hidden: !a.hidden } : a)); onSelect([]); }
     else if (action === 'toggle-locked') onChange(annotations.map((a) => ids.includes(a.id) ? { ...a, locked: !a.locked } : a));
     else if (action === 'flip-x') onChange(ids.reduce<DesignAnnotation[]>((list, id) => flipAnnotation(list, id, 'x'), [...annotations]));
@@ -334,6 +337,13 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
           style={{ left: a.x, top: a.y, width: a.w, height: a.h, clipPath: clipFor(a), ...cssForAnnotation(a) }}
           onDoubleClick={a.kind === 'text' ? () => { setEditingId(a.id); setEditingValue(a.label); } : undefined}>
           <ShapeSvg a={a} />
+          {/* A component's markup is generated, and this layer lives in the
+              renderer origin that holds the bridge. The empty sandbox — not the
+              script-tag rejection at generation time — is what makes it safe to
+              render. No allow-scripts, so it is a picture, not a live control. */}
+          {a.kind === 'component' && a.html
+            ? <iframe className="ds-anno-component" aria-hidden="true" tabIndex={-1} title={a.label || 'Component'} sandbox="" srcDoc={a.html} />
+            : null}
           {a.kind === 'frame' || a.kind === 'section' ? <span className="ds-anno-label">{a.label}</span> : null}
           {a.kind === 'text' && editingId !== a.id ? a.label : null}
           {editingId === a.id ? (

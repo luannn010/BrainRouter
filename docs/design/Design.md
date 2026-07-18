@@ -41,7 +41,7 @@ BrainRouter’s desktop Design Studio uses a dark, instrument-like editor surfac
 
 ### Resource rail
 
-The left rail exposes Files, Assets, Components, Scales, and Design. Files selects prototype flows. Assets and Scales are read-only inventories derived from the selected HTML.
+The left rail has two tabs: **Files** and **Design**. Assets, Components and Scales are gone — Assets and Scales were read-only inventories derived from the current HTML, and components are canvas objects now rather than a library to browse, so there was nothing left for those tabs to be.
 
 Design shows **two trees**, because they are two different things — what you drew, and what the prototype is:
 
@@ -104,7 +104,7 @@ Right-click acts on whatever was clicked — a screen, an annotation, or empty s
 | Outline text | **Real glyph contours.** There is no font-outline API in a renderer, so the text is rasterised to an offscreen alpha buffer and `traceMask` walks it with directed boundary edges into closed contours. Tracing "Ag" yields four subpaths — an outer contour and a counter for each letter. The tracer is pure, so it is tested against synthetic masks; only the rasterisation touches the DOM. |
 | Outline stroke | Converts a stroked shape into a filled band: an outer ring plus an inner ring wound the other way. Exact for straight-edged kinds and ellipses; for a star or a traced path it bands off the bounding box. |
 | Create component | Promotes the selection to a `CanvasComponent` — a self-contained SVG — persisted in the document and listed in the Components rail. |
-| Create component with chat | A compact prompt box calling `design:quick-generate`, a **one-shot completion** using the model configured in app settings. Deliberately not the agent loop: it runs no tools, writes no files, and never enters the visible transcript. Markup containing a `<script>` tag is rejected, because generated HTML is stored and re-rendered on the canvas. |
+| Create component with chat | A small prompt box **anchored where you right-clicked**, in the style of VS Code's inline chat: one line in, one component out, placed at that point. It calls `design:quick-generate`, a **one-shot completion** using the model configured in app settings — deliberately not the agent loop, so it runs no tools, writes no files, and never enters the visible transcript. |
 | Show/Hide, Lock/Unlock, Flip H/V | Apply to screens (`CanvasNode` flags) and annotations alike, across the whole selection. |
 
 The canvas document is schema **v2** (components, per-node hidden/locked/flip, group auto layout). A v1 document on disk is upgraded on read rather than rejected, so an existing board survives the change.
@@ -153,6 +153,14 @@ Two value rules follow from the same mechanism:
 
 - Fill and text **alpha must be a bare number** — it is consumed as `calc(var(--br-fill-a) * 1%)`, and a value carrying its own unit makes the declaration invalid at computed-value time, which resolves to `initial` and *erases* the fill rather than leaving it alone. `alphaValue()` strips the unit and clamps to 0–100.
 - `font-feature-settings` uses **single** quotes (`'calt' 1`). The same declaration string is serialized into the `data-br-draft-style="…"` attribute by `applyDraftOperations`, where a double quote would close the attribute.
+
+### Components on the canvas
+
+A generated component is a `component` annotation: a layer that carries its own markup and is placed, moved, selected and listed like any other. It appears in the Design tab's Canvas tree with a component glyph, so what you asked for shows up where you asked for it.
+
+Its markup renders inside an iframe with a **fully empty `sandbox`** — no `allow-scripts`. That is the security boundary, not the `<script>` rejection in `design:quick-generate`: this layer runs in the renderer origin that holds the bridge, and an inline `onerror=` would fire without the sandbox. The consequence is worth stating plainly — **a generated component is a picture, not a working control**. That is the correct trade for markup a model wrote, and it is what makes it safe to render at all.
+
+The iframe is `pointer-events:none`, so the annotation layer keeps hit-testing: the component selects and drags like every other layer, and its box is resized from the Design panel's W/H fields.
 
 ### Tools and shape properties
 

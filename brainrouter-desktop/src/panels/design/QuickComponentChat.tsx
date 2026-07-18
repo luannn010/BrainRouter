@@ -1,13 +1,21 @@
 // brainrouter-desktop/src/panels/design/QuickComponentChat.tsx
-// A compact prompt box that turns a description into a component using the
-// model configured in app settings. This is deliberately NOT the agent loop:
-// `design:quick-generate` is a one-shot completion, so generating a component
-// never writes files and never appears in the main chat transcript.
+// A small prompt box anchored where you right-clicked, in the style of VS
+// Code's inline chat: one line in, one component out, placed right there.
+//
+// Deliberately NOT the agent loop: `design:quick-generate` is a one-shot
+// completion, so generating a component never writes files and never appears
+// in the main chat transcript. Rendered through a portal because the canvas is
+// transform-scaled and a positioned child would inherit that scale.
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from '../../icons.js';
 import { bridgeQuery } from '../../lib/bridgeQuery.js';
 
-export function QuickComponentChat({ onGenerated, onClose }: {
+const WIDTH = 360;
+
+export function QuickComponentChat({ at, onGenerated, onClose }: {
+  /** Client coordinates of the click that asked for a component. */
+  at: { x: number; y: number };
   onGenerated: (html: string, name: string) => void;
   onClose: () => void;
 }): React.ReactElement {
@@ -23,10 +31,16 @@ export function QuickComponentChat({ onGenerated, onClose }: {
       .catch(() => setModel(null));
   }, []);
 
+  // Dismiss on Escape or a click outside, the same way the context menu does.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    const onDown = (e: PointerEvent): void => { if (!ref.current?.contains(e.target as Node)) onClose(); };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointerdown', onDown, true);
+    };
   }, [onClose]);
 
   const submit = (): void => {
@@ -38,30 +52,35 @@ export function QuickComponentChat({ onGenerated, onClose }: {
       .then((result) => {
         if (result?.error || !result?.html?.trim()) { setError(result?.error ?? 'The model returned nothing.'); return; }
         onGenerated(result.html, instruction.slice(0, 40));
-        onClose();
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setBusy(false));
   };
 
+  const left = Math.max(8, Math.min(at.x, window.innerWidth - WIDTH - 8));
+  const top = Math.max(8, Math.min(at.y, window.innerHeight - 96));
+
   return createPortal(
-    <div className="ds-quickchat-scrim" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div ref={ref} className="ds-quickchat" role="dialog" aria-label="Create a component with chat">
-        <div className="ds-quickchat-head">
-          <strong>Create a component</strong>
-          <small data-mono>{model ?? 'no model configured'}</small>
-        </div>
-        <textarea className="ds-quickchat-input" autoFocus rows={3} value={prompt} placeholder="A pricing card with a title, a price and a primary button"
-          aria-label="Describe the component" onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }} />
-        {error ? <p className="ds-quickchat-error" role="alert">{error}</p> : null}
-        <div className="ds-quickchat-actions">
-          <button type="button" className="ds-iconbtn" onClick={onClose}>Cancel</button>
-          <button type="button" className="ds-iconbtn is-primary" disabled={busy || !prompt.trim()} onClick={submit}>
-            {busy ? 'Generating…' : 'Generate'}
-          </button>
-        </div>
+    <div ref={ref} className="ds-inline-chat" style={{ left, top, width: WIDTH }} role="dialog" aria-label="Create a component">
+      <div className="ds-inline-chat-row">
+        <Icon name="spark" size={13} />
+        <input autoFocus className="ds-inline-chat-input" value={prompt} disabled={busy}
+          placeholder="Describe a component — a primary button, a price card…"
+          aria-label="Describe the component"
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }} />
+        <button type="button" className="ds-inline-chat-go" disabled={busy || !prompt.trim()} onClick={submit}
+          aria-label="Generate component" title="Generate (Enter)">
+          <Icon name="chev-up" size={12} />
+        </button>
+        <button type="button" className="ds-inline-chat-close" onClick={onClose} aria-label="Close" title="Close (Esc)">
+          <Icon name="close" size={12} />
+        </button>
       </div>
+      <div className="ds-inline-chat-foot">
+        <small data-mono>{busy ? 'Generating…' : model ?? 'no model configured'}</small>
+      </div>
+      {error ? <p className="ds-inline-chat-error" role="alert">{error}</p> : null}
     </div>,
     document.body,
   );

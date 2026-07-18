@@ -6,7 +6,7 @@ import {
   moveAnnotation, nextGroupLabel, normalizeRect, parseAnnotationStore,
   pasteAnnotation, polygonPointsFor, removeAnnotation, sendToBack,
   serializeAnnotationStore, setAnnotationLabel, starPointsFor, toggleAnnotationFlag,
-  boundsOf, constrainRect, frameSelection, groupAnnotations, membersOf, setMask, ungroupAnnotations,
+  boundsOf, componentAnnotation, constrainRect, frameSelection, groupAnnotations, membersOf, setMask, ungroupAnnotations,
   DUPLICATE_OFFSET,
 } from './designAnnotations.js';
 
@@ -259,4 +259,20 @@ test('shift-drawing constrains to a square that follows the pointer', () => {
 test('a constrained square drawn up and left still grows away from the anchor', () => {
   assert.deepEqual(constrainRect({ x: 100, y: 100 }, { x: 40, y: 80 }), { x: 40, y: 40, w: 60, h: 60 });
   assert.deepEqual(constrainRect({ x: 100, y: 100 }, { x: 130, y: 20 }), { x: 100, y: 20, w: 80, h: 80 });
+});
+
+test('a component annotation round-trips with its markup', () => {
+  const made = componentAnnotation('Primary button', '<button>Go</button>', { x: 10, y: 20, w: 320, h: 180 });
+  assert.equal(made.kind, 'component');
+  assert.equal(made.label, 'Primary button');
+  assert.equal(made.html, '<button>Go</button>');
+  const store = parseAnnotationStore(serializeAnnotationStore({ key: [made] }));
+  assert.equal(store.key.length, 1);
+  assert.equal(store.key[0].html, '<button>Go</button>');
+});
+
+test('a component with no markup is not a component', () => {
+  const made = componentAnnotation('Empty', '<i/>', { x: 0, y: 0, w: 10, h: 10 });
+  assert.deepEqual(parseAnnotationStore(JSON.stringify({ key: [{ ...made, html: '' }] })).key, []);
+  assert.deepEqual(parseAnnotationStore(JSON.stringify({ key: [{ ...made, html: 42 }] })).key, []);
 });

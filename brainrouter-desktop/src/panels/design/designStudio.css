@@ -321,23 +321,22 @@
 /* A mask is a boundary, not a picture — it draws as an outline and clips its siblings. */
 .design-studio .ds-anno--mask { opacity:.5; }
 .design-studio .ds-anno--mask svg *, .design-studio .ds-anno--mask svg path { fill:none; stroke:var(--ds-accent); stroke-dasharray:4 3; }
-/* --- Quick component chat --- */
-.design-studio .ds-quickchat-scrim { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
-.design-studio .ds-quickchat { width:min(420px,92vw); display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-panel); background:var(--ds-surface); box-shadow:0 24px 60px rgba(0,0,0,.55); }
-.design-studio .ds-quickchat-head { display:flex; align-items:baseline; gap:10px; }
-.design-studio .ds-quickchat-head small { margin-left:auto; color:var(--ds-text-3); font:10px var(--ds-mono); }
-.design-studio .ds-quickchat-input { resize:vertical; padding:8px 10px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-bg); color:var(--ds-text); font:13px inherit; }
-.design-studio .ds-quickchat-input:focus-visible { outline:2px solid var(--ds-accent); outline-offset:1px; }
-.design-studio .ds-quickchat-error { margin:0; color:var(--ds-danger); font-size:12px; }
-.design-studio .ds-quickchat-actions { display:flex; justify-content:flex-end; gap:8px; }
+/* --- A generated component on the canvas: its own markup, sandboxed --- */
+.design-studio .ds-anno-component { position:absolute; inset:0; width:100%; height:100%; border:0; background:transparent; pointer-events:none; }
+.design-studio .ds-anno--component.is-selected { outline:2px solid var(--ds-accent); outline-offset:1px; }
+/* --- Inline component chat: anchored where you clicked, VS Code style.
+       Not scoped to .design-studio — it portals to document.body. --- */
+.ds-inline-chat { position:fixed; z-index:70; display:flex; flex-direction:column; gap:4px; padding:7px 8px; border:1px solid var(--ds-border-strong,var(--ds-border)); border-radius:10px; background:var(--ds-surface); box-shadow:0 18px 44px rgba(0,0,0,.5); }
+.ds-inline-chat-row { display:flex; align-items:center; gap:7px; }
+.ds-inline-chat-input { flex:1; min-width:0; padding:5px 2px; border:0; background:transparent; color:var(--ds-text); font:13px inherit; }
+.ds-inline-chat-input:focus { outline:none; }
+.ds-inline-chat-input::placeholder { color:var(--ds-text-3); }
+.ds-inline-chat-go, .ds-inline-chat-close { display:flex; align-items:center; justify-content:center; width:22px; height:22px; flex:none; padding:0; border:0; border-radius:6px; background:transparent; color:var(--ds-text-2); cursor:pointer; }
+.ds-inline-chat-go:hover:not(:disabled), .ds-inline-chat-close:hover { background:var(--ds-overlay); color:var(--ds-text); }
+.ds-inline-chat-go:disabled { opacity:.4; cursor:default; }
+.ds-inline-chat-foot small { color:var(--ds-text-3); font:10px var(--ds-mono); }
+.ds-inline-chat-error { margin:2px 0 0; color:var(--ds-danger); font-size:11px; }
 .design-studio .ds-iconbtn.is-primary { border-color:var(--ds-accent); color:var(--ds-accent); }
-/* --- Saved components in the resource rail --- */
-.design-studio .ds-component-list li { margin-bottom:6px; }
-.design-studio .ds-component-card { display:grid; grid-template-columns:40px 1fr auto auto; align-items:center; gap:8px; padding:6px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-control); background:var(--ds-surface-2); cursor:grab; }
-.design-studio .ds-component-card:active { cursor:grabbing; }
-.design-studio .ds-component-preview { width:40px; height:32px; border:0; border-radius:4px; background:var(--ds-bg); pointer-events:none; }
-.design-studio .ds-component-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
-.design-studio .ds-component-card small { color:var(--ds-text-3); font:9px var(--ds-mono); }
 /* --- Annotation layer (Frame / Shape / Text tools) — host DOM above the
        preview surface; never part of the prototype's HTML. --- */
 .design-studio .ds-anno-layer { position:absolute; inset:0; z-index:3; pointer-events:none; user-select:none; }

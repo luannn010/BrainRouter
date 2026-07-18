@@ -10,7 +10,7 @@ import type { CanvasAutoLayout } from './canvasModel.js';
 /** 'frame'/'section' are labeled regions; 'path' is baked vector geometry
  *  produced by Flatten / Outline text / Outline stroke; the rest are drawn
  *  shapes and text. */
-export type AnnotationKind = 'frame' | 'section' | 'rectangle' | 'line' | 'ellipse' | 'polygon' | 'star' | 'text' | 'path';
+export type AnnotationKind = 'frame' | 'section' | 'rectangle' | 'line' | 'ellipse' | 'polygon' | 'star' | 'text' | 'path' | 'component';
 
 export interface StagePoint { x: number; y: number }
 export interface StageRect { x: number; y: number; w: number; h: number }
@@ -31,6 +31,10 @@ export interface DesignAnnotation extends StageRect {
   mask?: boolean;
   /** SVG path data in the annotation's own box space — set for kind 'path'. */
   path?: string;
+  /** Markup for kind 'component'. Rendered in a fully-sandboxed iframe: this
+   *  is generated content, and the annotation layer runs in the renderer
+   *  origin that holds the bridge. */
+  html?: string;
   /** Set on a container to lay its members out automatically. */
   autoLayout?: CanvasAutoLayout;
   /** The component this layer was packed into, if any. Components live in the
@@ -104,6 +108,14 @@ export function createAnnotation(kind: AnnotationKind, rect: StageRect, opts?: {
   if (opts?.flipX) base.flipX = true;
   if (opts?.flipY) base.flipY = true;
   return base;
+}
+
+/**
+ * A component IS its markup: generated once from a prompt, then placed and
+ * moved like any other layer. It renders sandboxed — see StageOverlay.
+ */
+export function componentAnnotation(name: string, html: string, rect: StageRect): DesignAnnotation {
+  return { ...createAnnotation('component', rect, { label: name }), html };
 }
 
 const GROUP_LABEL_PREFIX: Partial<Record<AnnotationKind, string>> = { frame: 'Frame', section: 'Section' };
@@ -302,7 +314,7 @@ export function annotationsKey(workspaceRoot: string | undefined, protoId: strin
   return `${workspaceRoot ?? 'unknown'}:${protoId}`;
 }
 
-const KINDS: readonly string[] = ['frame', 'section', 'rectangle', 'line', 'ellipse', 'polygon', 'star', 'text', 'path'];
+const KINDS: readonly string[] = ['frame', 'section', 'rectangle', 'line', 'ellipse', 'polygon', 'star', 'text', 'path', 'component'];
 const LAYOUT_DIRECTIONS: readonly string[] = ['row', 'column'];
 const LAYOUT_ALIGNS: readonly string[] = ['start', 'center', 'end'];
 
@@ -329,8 +341,10 @@ function parseAnnotation(value: unknown): DesignAnnotation | null {
   if (typeof a.id !== 'string' || !kind || !KINDS.includes(kind)) return null;
   if (typeof a.label !== 'string') return null;
   if (typeof a.x !== 'number' || typeof a.y !== 'number' || typeof a.w !== 'number' || typeof a.h !== 'number') return null;
-  // A path annotation IS its geometry; without it there is nothing to render.
+  // A path annotation IS its geometry, and a component IS its markup; without
+  // those there is nothing to render, so the entry is not a valid annotation.
   if (kind === 'path' && (typeof a.path !== 'string' || !a.path.trim())) return null;
+  if (kind === 'component' && (typeof a.html !== 'string' || !a.html.trim())) return null;
   const parsed: DesignAnnotation = { id: a.id, kind: kind as AnnotationKind, label: a.label, x: a.x, y: a.y, w: a.w, h: a.h };
   if (a.flipX === true) parsed.flipX = true;
   if (a.flipY === true) parsed.flipY = true;
@@ -348,6 +362,7 @@ function parseAnnotation(value: unknown): DesignAnnotation | null {
     if (typeof value === 'number' && Number.isFinite(value)) parsed[field] = value;
   }
   if (typeof a.path === 'string' && a.path.trim()) parsed.path = a.path;
+  if (typeof a.html === 'string' && a.html.trim()) parsed.html = a.html;
   const autoLayout = parseAutoLayout(a.autoLayout);
   if (autoLayout) parsed.autoLayout = autoLayout;
   return parsed;

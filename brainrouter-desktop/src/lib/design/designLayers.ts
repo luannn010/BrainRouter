@@ -30,6 +30,7 @@ const ICONS: Record<AnnotationKind, string> = {
   star: 'star',
   text: 'text',
   path: 'polygon',
+  component: 'layout',
 };
 
 /** Containers own their members in the tree; everything else is a leaf. */

@@ -3,10 +3,10 @@ import { Icon } from '../../icons.js';
 import { bridgeQuery } from '../../lib/bridgeQuery.js';
 import { extractDesignElements, resolvePickedElement, type DesignElement, type DraftOperation } from '../../lib/design/designElements.js';
 import {
-  ANNOTATIONS_STORAGE_KEY, annotationsKey, boundsOf, bringToFront, createAnnotation,
+  ANNOTATIONS_STORAGE_KEY, annotationsKey, boundsOf, bringToFront, componentAnnotation, createAnnotation,
   duplicateAnnotation, flipAnnotation, frameSelection, groupAnnotations, parseAnnotationStore,
   pasteAnnotation, sendToBack, serializeAnnotationStore, setMask, ungroupAnnotations,
-  type DesignAnnotation,
+  type DesignAnnotation, type StagePoint,
 } from '../../lib/design/designAnnotations.js';
 import { DEFAULT_AUTO_LAYOUT, autoLayoutAnnotations } from '../../lib/design/designAutoLayout.js';
 import { flattenToPath } from '../../lib/design/designOutline.js';
@@ -29,7 +29,7 @@ import { DEVICE_SIZE, DesignScreen } from './DesignScreen.js';
 import { DesignBottomToolbar } from './DesignBottomToolbar.js';
 import { StageOverlay } from './StageOverlay.js';
 import { DesignInspector, type InspectorTab } from './DesignInspector.js';
-import { COMPONENT_DRAG_TYPE, DesignResourceRail, type DesignResource } from './DesignResourceRail.js';
+import { DesignResourceRail, type DesignResource } from './DesignResourceRail.js';
 import { CanvasRulers } from './CanvasRulers.js';
 import type { PrototypesApi } from '../../lib/design/usePrototypes.js';
 import type { PrototypeFrame } from '../../lib/design/useCanvasFrames.js';
@@ -38,6 +38,9 @@ const DEVICES: Device[] = ['desktop', 'tablet', 'phone'];
 const DRAFT_KEY = 'brainrouter.design-tab.drafts';
 /** The live surface floats above every screen frame; frame z is a small index. */
 const LIVE_LAYER_Z = 1000;
+/** Default box for a generated component — resize it in the Design panel. */
+const COMPONENT_W = 320;
+const COMPONENT_H = 180;
 
 export function DesignsView({ workspaceRoot, protos, device, setDevice, previewRef, picked, onPick, onOpenAi, onDraftContextChange }: {
   workspaceRoot?: string;
@@ -83,7 +86,9 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   /** Canvas-level right-click menu (screens and empty space). */
   const [screenMenu, setScreenMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
   const [screenNotice, setScreenNotice] = useState<string | null>(null);
-  const [quickChatOpen, setQuickChatOpen] = useState(false);
+  /** Where the component chat was asked for: the box goes at `at`, the
+   *  component it generates goes at `stage`. */
+  const [quickChat, setQuickChat] = useState<{ at: { x: number; y: number }; stage: StagePoint } | null>(null);
   /** Screens copy as ids — pasting one duplicates its prototype file. */
   const [screenClipboard, setScreenClipboard] = useState<string[]>([]);
   const viewRef = useRef(view);
@@ -265,7 +270,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     const resolved = resolvePickedElement(elements, picked);
     if (!resolved) return;
     setSelectedRef(resolved.ref);
-    setResource('components');
+    // The Design tab's layer tree is where a picked element highlights.
+    setResource('design');
     setInspectorTab('design');
   }, [elements, picked]);
 
@@ -282,7 +288,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       onPick(info);
       const resolved = resolvePickedElement(elements, info);
       if (resolved) setSelectedRef(resolved.ref);
-      if (resolved) setResource('components');
+      if (resolved) setResource('design');
       if (info) setInspectorTab('design');
       if (tool === 'select') setPickCycle((cycle) => cycle + 1);
       else setTool('select');
@@ -552,38 +558,23 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       case 'flip-x': flipScreens(ids, 'flipX'); break;
       case 'flip-y': flipScreens(ids, 'flipY'); break;
       case 'show-all': canvas.save({ ...canvas.document, hiddenPrototypeIds: [] }); break;
-      case 'create-component-chat': setQuickChatOpen(true); break;
+      case 'create-component-chat': {
+        // A screen-level right-click has no stage point, so the component goes
+        // at the world position under the pointer.
+        const shell = shellRef.current;
+        const rect = shell?.getBoundingClientRect();
+        const world = rect ? screenToWorld(viewRef.current, (screenMenu?.x ?? 0) - rect.left, (screenMenu?.y ?? 0) - rect.top) : { x: 0, y: 0 };
+        setQuickChat({ at: { x: screenMenu?.x ?? 0, y: screenMenu?.y ?? 0 }, stage: world });
+        break;
+      }
       // Group/frame/mask/flatten/outline are annotation concepts; a screen is a
       // whole document, so those rows stay disabled for a screen target.
       default: break;
     }
   };
 
-  // Dropping a saved component places it as a screen-sized frame at the drop
-  // point, so it becomes something you can position and annotate like anything
-  // else on the board.
-  const onCanvasDrop = (e: React.DragEvent<HTMLDivElement>): void => {
-    const id = e.dataTransfer.getData(COMPONENT_DRAG_TYPE);
-    if (!id) return;
-    e.preventDefault();
-    const component = canvas.document.components.find((item) => item.id === id);
-    const shell = shellRef.current;
-    if (!component || !shell) return;
-    const rect = shell.getBoundingClientRect();
-    const at = screenToWorld(viewRef.current, e.clientX - rect.left, e.clientY - rect.top);
-    const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
-    const placed = createAnnotation('frame', {
-      x: snapTo(at.x, grid), y: snapTo(at.y, grid), w: component.width, h: component.height,
-    }, { label: component.name });
-    changeAnnotations([...annotations, placed]);
-    setAnnoIds([placed.id]);
-    setScreenNotice(`Placed "${component.name}" on ${protos.selected?.title ?? 'the screen'}.`);
-  };
-  const onCanvasDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
-    if (!e.dataTransfer.types.includes(COMPONENT_DRAG_TYPE)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-  };
+  // Drag-from-rail is gone with the Components tab: a component is created
+  // straight onto the canvas at the point you asked for it.
 
   const setZoomPercent = (percent: number): void => {
     const shell = shellRef.current;
@@ -677,11 +668,10 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   return <div className="ds-designs ds-design-editor">
     <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer}
       components={canvas.document.components}
-      onDeleteComponent={(id) => canvas.save({ ...canvas.document, components: canvas.document.components.filter((item) => item.id !== id) })}
       annotations={annotations} selectedAnnoIds={annoIds} onAnnotationSelect={selectCanvasLayer} />
     <main className="ds-editor-stage">
       <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => applyDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
-      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu} onDragOver={onCanvasDragOver} onDrop={onCanvasDrop}>
+      <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown} onContextMenu={onShellContextMenu}>
         <div className="ds-design-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
           {shownNodes.map((node) => <DesignScreen key={node.prototypeId} node={node}
             title={titleById.get(node.prototypeId) ?? node.prototypeId}
@@ -694,7 +684,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
             <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}
               overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedIds={annoIds}
                 clipboard={clipboard} onSelect={selectFromCanvas} onChange={changeAnnotations} onClipboardChange={setClipboard}
-                onCreateComponent={createComponentFrom} onQuickChat={() => setQuickChatOpen(true)}
+                onCreateComponent={createComponentFrom} onQuickChat={(at, stage) => setQuickChat({ at, stage })}
                 onCreated={() => { if (revertsToSelect(tool)) setTool('select'); }} />}
               onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
           </div> : null}
@@ -709,14 +699,19 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
           hiddenCount={canvas.document.hiddenPrototypeIds.length}
           onAction={applyScreenAction}
           onClose={() => setScreenMenu(null)} /> : null}
-        {quickChatOpen ? <QuickComponentChat
+        {quickChat ? <QuickComponentChat at={quickChat.at}
           onGenerated={(html, name) => {
-            saveComponents(componentFromHtml(uniqueComponentName(canvas.document.components, name || 'Component'), html, { w: 320, h: 200 }));
-            // A generated component has no layer on the canvas to point at, so
-            // the Components tab is the only place it becomes visible.
-            setResource('components');
+            // The component lands on the canvas where it was asked for, and is
+            // also recorded in the document so the layer can resolve its name.
+            const label = uniqueComponentName(canvas.document.components, name.trim() || 'Component');
+            const rect = { x: quickChat.stage.x, y: quickChat.stage.y, w: COMPONENT_W, h: COMPONENT_H };
+            const created = componentAnnotation(label, html, rect);
+            saveComponents(componentFromHtml(label, html, { w: rect.w, h: rect.h }));
+            changeAnnotations([...annotations, created]);
+            setAnnoIds([created.id]);
+            setQuickChat(null);
           }}
-          onClose={() => setQuickChatOpen(false)} /> : null}
+          onClose={() => setQuickChat(null)} /> : null}
       </div>
       <DesignBottomToolbar tool={tool} onToolChange={setTool} frameKind={frameKind} shapeKind={shapeKind}
         onFrameKindChange={setFrameKind} onShapeKindChange={setShapeKind}
