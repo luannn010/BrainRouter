@@ -167,7 +167,15 @@ A selected shape takes over the inspector's Design tab, showing the properties O
 
 Colours are **allowlisted, not escaped** — hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, or a bare keyword. They land in an inline `style`, which is a place where "close enough" becomes CSS injection, so anything carrying a semicolon, a `url()`, or an unnamed function is refused and the annotation is left untouched. The guard runs both on write and again on render, so a hand-edited localStorage store cannot smuggle a value through either.
 
-What this editor does **not** match from OpenPencil: it is a Skia/CanvasKit vector editor with its own `.fig`/`.pen` format, gradients, a pen tool, boolean operations and WebRTC collaboration. This is a redline layer over live HTML prototypes, so fills are solid colours, not gradients or images, and there is no vector path editing beyond the baked outlines described above.
+### OpenPencil parity
+
+Checked against [their shortcut reference](https://openpencil.dev/reference/keyboard-shortcuts) and [canvas navigation guide](https://openpencil.dev/user-guide/canvas-navigation), row by row.
+
+**Matched.** Tools V/H/F/S/R/O/L/T with Polygon and Star flyout-only. Canvas interaction: click select, Shift+click add/remove, Alt+drag duplicate-and-move, Shift+drag to constrain a drawn shape to a square or circle, Shift+drag to hold aspect while resizing, middle-drag pan, scroll pan, Ctrl+scroll zoom, double-click to edit text, Escape to deselect. Edit: Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo, Ctrl+X/C/V/D, Delete, Ctrl+A select all. View: Ctrl+= in, Ctrl+− out, Ctrl+0 to 100%, Ctrl+1 and Shift+1 to fit, Ctrl+2 and Shift+2 to zoom to selection.
+
+Undo covers the annotation layer and is **per gesture, not per frame** — a drag repaints continuously but lands one undo step on release, so one Ctrl+Z returns the shape to where the drag started. History is per prototype, so undo never walks back into another screen. Prototype drafts are excluded: they have their own explicit Save and Revert.
+
+**Not matched, and not reachable by changing this panel.** OpenPencil is a Skia/CanvasKit vector editor with its own `.fig`/`.pen` document model. That buys it gradients and image fills, a pen tool and vector path editing, boolean operations, rotation, components with variants, variables, multi-page documents, WebRTC collaboration, and export to PNG/SVG/JSX. This surface is a redline layer over live HTML prototypes, so fills are solid colours, there is no path editing beyond the baked outlines above, and there is no document format to open or export. Reaching those would mean replacing the renderer and the document model — a different product rather than a change to this one.
 
 ### Bottom toolbar
 

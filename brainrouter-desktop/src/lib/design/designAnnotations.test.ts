@@ -6,7 +6,7 @@ import {
   moveAnnotation, nextGroupLabel, normalizeRect, parseAnnotationStore,
   pasteAnnotation, polygonPointsFor, removeAnnotation, sendToBack,
   serializeAnnotationStore, setAnnotationLabel, starPointsFor, toggleAnnotationFlag,
-  boundsOf, frameSelection, groupAnnotations, membersOf, setMask, ungroupAnnotations,
+  boundsOf, constrainRect, frameSelection, groupAnnotations, membersOf, setMask, ungroupAnnotations,
   DUPLICATE_OFFSET,
 } from './designAnnotations.js';
 
@@ -248,4 +248,15 @@ test('a component link round-trips, and a malformed one is dropped', () => {
   assert.equal(parseAnnotationStore(serializeAnnotationStore({ key: [packed] })).key[0].componentId, 'c1');
   const broken = parseAnnotationStore(JSON.stringify({ key: [{ ...packed, componentId: 42 }] }));
   assert.equal(broken.key[0].componentId, undefined);
+});
+
+test('shift-drawing constrains to a square that follows the pointer', () => {
+  assert.deepEqual(constrainRect({ x: 0, y: 0 }, { x: 100, y: 40 }), { x: 0, y: 0, w: 100, h: 100 },
+    'the larger axis leads, so the shape does not shrink under the cursor');
+  assert.deepEqual(constrainRect({ x: 0, y: 0 }, { x: 30, y: 90 }), { x: 0, y: 0, w: 90, h: 90 });
+});
+
+test('a constrained square drawn up and left still grows away from the anchor', () => {
+  assert.deepEqual(constrainRect({ x: 100, y: 100 }, { x: 40, y: 80 }), { x: 40, y: 40, w: 60, h: 60 });
+  assert.deepEqual(constrainRect({ x: 100, y: 100 }, { x: 130, y: 20 }), { x: 100, y: 20, w: 80, h: 80 });
 });

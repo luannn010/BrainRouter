@@ -60,6 +60,22 @@ export function normalizeRect(a: StagePoint, b: StagePoint): StageRect {
   return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
 }
 
+/**
+ * Shift-drag while drawing: a square, or a circle for an ellipse. The larger
+ * axis wins so the shape follows the pointer rather than shrinking under it,
+ * and the corner opposite the anchor is the one that moves — dragging up and
+ * left from the anchor still grows away from it.
+ */
+export function constrainRect(anchor: StagePoint, point: StagePoint): StageRect {
+  const size = Math.max(Math.abs(point.x - anchor.x), Math.abs(point.y - anchor.y));
+  return {
+    x: point.x < anchor.x ? anchor.x - size : anchor.x,
+    y: point.y < anchor.y ? anchor.y - size : anchor.y,
+    w: size,
+    h: size,
+  };
+}
+
 /** Which way the drag ran — a line drawn bottom-left→top-right must render as
  *  the rising diagonal of its normalized rect, not the falling one. */
 export function dragFlip(a: StagePoint, b: StagePoint): { flipX: boolean; flipY: boolean } {

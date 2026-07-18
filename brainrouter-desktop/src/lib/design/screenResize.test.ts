@@ -59,3 +59,19 @@ test('rounding keeps sizes whole so the readout never shows fractions', () => {
   assert.equal(Number.isInteger(box.w), true);
   assert.equal(Number.isInteger(box.h), true);
 });
+
+test('shift-resize keeps the original proportions', () => {
+  const wide = { x: 0, y: 0, w: 400, h: 200 }; // 2:1
+  const box = resizeRect(wide, 'se', 200, 0, { grid: 1, min: 10, lockAspect: true });
+  assert.equal(box.w / box.h, 2, 'the ratio survives');
+  assert.equal(box.w, 600);
+  assert.equal(box.h, 300);
+});
+
+test('an aspect-locked resize still pins the edges its handle does not name', () => {
+  const wide = { x: 100, y: 100, w: 400, h: 200 };
+  const box = resizeRect(wide, 'nw', -200, 0, { grid: 1, min: 10, lockAspect: true });
+  assert.equal(box.x + box.w, 500, 'right edge pinned');
+  assert.equal(box.y + box.h, 300, 'bottom edge pinned');
+  assert.equal(box.w / box.h, 2);
+});

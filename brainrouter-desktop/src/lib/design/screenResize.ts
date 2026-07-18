@@ -24,7 +24,7 @@ export function isResizeHandle(value: string): value is ResizeHandle {
  * they were, including when the drag is clamped at the minimum — otherwise a
  * screen squashed from its top-left would crawl across the canvas.
  */
-export function resizeRect(start: ResizeRect, handle: ResizeHandle, dx: number, dy: number, opts: { grid: number; min: number }): ResizeRect {
+export function resizeRect(start: ResizeRect, handle: ResizeHandle, dx: number, dy: number, opts: { grid: number; min: number; lockAspect?: boolean }): ResizeRect {
   const right = start.x + start.w;
   const bottom = start.y + start.h;
   const grid = opts.grid;
@@ -58,5 +58,26 @@ export function resizeRect(start: ResizeRect, handle: ResizeHandle, dx: number, 
     }
   }
 
+  if (opts.lockAspect) return lockAspect(start, handle, { x, y, w, h }, min);
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+}
+
+/**
+ * Shift-resize: keep the original proportions. The axis that moved further
+ * leads, and the pinned edges stay pinned — so aspect-locking from the
+ * north-west corner still leaves the south-east corner where it was.
+ */
+function lockAspect(start: ResizeRect, handle: ResizeHandle, box: ResizeRect, min: number): ResizeRect {
+  const ratio = start.h === 0 ? 1 : start.w / start.h;
+  const led = Math.abs(box.w - start.w) >= Math.abs(box.h - start.h);
+  let w = led ? box.w : box.h * ratio;
+  let h = led ? box.w / ratio : box.h;
+  w = Math.max(min, w);
+  h = Math.max(min, h);
+  // An edge handle only ever drove one axis; the other follows from the ratio.
+  const right = start.x + start.w;
+  const bottom = start.y + start.h;
+  const x = handle.includes('w') ? right - w : start.x;
+  const y = handle.includes('n') ? bottom - h : start.y;
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
 }

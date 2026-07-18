@@ -9,7 +9,7 @@
 import React, { useRef, useState } from 'react';
 import type { DesignTool, FrameKind, ShapeKind } from '../../lib/design/designTools.js';
 import {
-  DEFAULT_TEXT_SIZE, boundsOf, bringToFront, clientToStagePoint, createAnnotation, dragFlip,
+  DEFAULT_TEXT_SIZE, boundsOf, bringToFront, clientToStagePoint, constrainRect, createAnnotation, dragFlip,
   duplicateAnnotation, flipAnnotation, frameSelection, groupAnnotations, hitTest,
   hitTestIncludingLocked, isClick, membersOf, nextGroupLabel, normalizeRect,
   pasteAnnotation, polygonPointsFor, removeAnnotation, sendToBack, setAnnotationLabel,
@@ -57,6 +57,11 @@ type Gesture =
   | { kind: 'draw'; anchor: StagePoint; draw: AnnotationKind }
   | { kind: 'move'; id: string; start: StagePoint; base: DesignAnnotation[] };
 
+/** Shift constrains a drawn shape to a square (a circle, for an ellipse). */
+function drawRect(anchor: StagePoint, point: StagePoint, constrain: boolean): StageRect {
+  return constrain ? constrainRect(anchor, point) : normalizeRect(anchor, point);
+}
+
 type MenuState = { x: number; y: number; point: StagePoint; targetId: string | null };
 
 /** SVG body for the drawn shapes; frame/section/rectangle/text are CSS boxes. */
@@ -92,7 +97,9 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
   selectedIds: readonly string[];
   clipboard: DesignAnnotation | null;
   onSelect: (ids: string[]) => void;
-  onChange: (next: DesignAnnotation[]) => void;
+  /** `transient` marks an in-flight drag frame: it repaints but does not add an
+   *  undo step, so one Ctrl+Z undoes the whole drag rather than one mouse-move. */
+  onChange: (next: DesignAnnotation[], opts?: { transient?: boolean }) => void;
   onClipboardChange: (a: DesignAnnotation | null) => void;
   onCreateComponent: (members: DesignAnnotation[]) => void;
   onQuickChat: () => void;
@@ -101,6 +108,8 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
 }): React.ReactElement {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
+  /** Latest in-flight drag result, committed to history on pointer-up. */
+  const movedRef = useRef<DesignAnnotation[] | null>(null);
   const [draft, setDraft] = useState<{ rect: StageRect; kind: AnnotationKind; flipX: boolean; flipY: boolean } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
@@ -161,6 +170,20 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     const hit = tool === 'select' ? hitTest(annotations, p) : null;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* synthetic or already-released pointer */ }
     if (hit) {
+      // Alt+drag leaves the original behind and drags a copy, so the gesture
+      // starts by cloning and then moves the clone.
+      if (e.altKey) {
+        const { list, id } = duplicateAnnotation(annotations, hit.id);
+        if (id) {
+          // The copy starts exactly under the pointer; DUPLICATE_OFFSET is for
+          // a duplicate you did NOT drag, where it stops the copy hiding.
+          const placed = list.map((a) => a.id === id ? { ...a, x: hit.x, y: hit.y } : a);
+          onChange(placed);
+          onSelect([id]);
+          gestureRef.current = { kind: 'move', id, start: p, base: placed };
+          return;
+        }
+      }
       onSelect(e.shiftKey
         ? (selectedIds.includes(hit.id) ? selectedIds.filter((id) => id !== hit.id) : [...selectedIds, hit.id])
         : (selectedIds.includes(hit.id) ? [...selectedIds] : [hit.id]));
@@ -189,7 +212,7 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
     const g = gestureRef.current;
     if (!g) return;
     const p = toStage(e.clientX, e.clientY);
-    if (g.kind === 'draw') { setDraft({ rect: normalizeRect(g.anchor, p), kind: g.draw, ...dragFlip(g.anchor, p) }); return; }
+    if (g.kind === 'draw') { setDraft({ rect: drawRect(g.anchor, p, e.shiftKey), kind: g.draw, ...dragFlip(g.anchor, p) }); return; }
     // Move from the pointer-down snapshot, not the live list — no drift. The
     // whole selection travels together, plus anything grouped with it.
     const dx = p.x - g.start.x;
@@ -199,18 +222,27 @@ export function StageOverlay({ tool, frameKind, shapeKind, zoom, annotations, se
       const groupId = g.base.find((a) => a.id === id)?.groupId;
       if (groupId) for (const member of membersOf(g.base, groupId)) moving.add(member.id);
     }
-    onChange(g.base.map((a) => moving.has(a.id) ? { ...a, x: a.x + dx, y: a.y + dy } : a));
+    const moved = g.base.map((a) => moving.has(a.id) ? { ...a, x: a.x + dx, y: a.y + dy } : a);
+    movedRef.current = moved;
+    onChange(moved, { transient: true });
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>): void => {
     const g = gestureRef.current;
     gestureRef.current = null;
+    if (g?.kind === 'move') {
+      // Commit the drag as ONE undo step, now that it has finished.
+      const moved = movedRef.current;
+      movedRef.current = null;
+      if (moved) onChange(moved);
+      return;
+    }
     if (!g || g.kind !== 'draw') return;
     setDraft(null);
     // Compute the rect from the anchor + THIS event — the draft state can lag
     // a render behind, which would drop a drag finished within one frame.
     const end = toStage(e.clientX, e.clientY);
-    const rect = normalizeRect(g.anchor, end);
+    const rect = drawRect(g.anchor, end, e.shiftKey);
     if (isClick(rect)) { onSelect([]); return; }
     const isGroup = g.draw === 'frame' || g.draw === 'section';
     const flip = g.draw === 'line' ? dragFlip(g.anchor, end) : undefined;

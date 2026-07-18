@@ -15,6 +15,7 @@ import { DesignContextMenu, type MenuAction, type MenuTarget } from './DesignCon
 import { QuickComponentChat } from './QuickComponentChat.js';
 import { isEditableTarget, revertsToSelect, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
 import { setAnnotationStyle, type StyleField } from '../../lib/design/annotationStyle.js';
+import { emptyHistory, pushHistory, redo, undo, type History } from '../../lib/design/designHistory.js';
 import { fitBounds, panBy, screenToWorld, snapTo, wheelGesture, zoomAt, type ViewBounds, type Viewport } from '../../lib/design/canvasViewport.js';
 import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, toggleSelection, type SelectableItem, type Selection } from '../../lib/design/designSelection.js';
 import { MIN_SCREEN, isResizeHandle, resizeRect } from '../../lib/design/screenResize.js';
@@ -196,8 +197,11 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     } catch { setOperations([]); }
     try {
       const store = parseAnnotationStore(window.localStorage.getItem(ANNOTATIONS_STORAGE_KEY));
-      setAnnotations(store[annotationsKey(workspaceRoot, protos.selected.id)] ?? []);
-    } catch { setAnnotations([]); }
+      const loaded = store[annotationsKey(workspaceRoot, protos.selected.id)] ?? [];
+      setAnnotations(loaded);
+      // History is per-prototype: undo must not walk back into another screen.
+      historyRef.current = emptyHistory(loaded);
+    } catch { setAnnotations([]); historyRef.current = emptyHistory<DesignAnnotation[]>([]); }
     return () => { active = false; };
   }, [protos.selected?.id, workspaceRoot]);
 
@@ -286,7 +290,29 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     return () => { disposed = true; stop?.(); };
   }, [tool, elements, onPick, previewReady, pickCycle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const changeAnnotations = (next: DesignAnnotation[]): void => {
+  // Undo/redo covers the annotation layer — the thing you draw and can lose.
+  // Prototype drafts have their own explicit Save/Revert and stay out of it.
+  const historyRef = useRef(emptyHistory<DesignAnnotation[]>([]));
+  const persistAnnotations = (next: DesignAnnotation[]): void => {
+    setAnnotations(next);
+    if (!protos.selected) return;
+    try {
+      const store = parseAnnotationStore(window.localStorage.getItem(ANNOTATIONS_STORAGE_KEY));
+      store[annotationsKey(workspaceRoot, protos.selected.id)] = next;
+      window.localStorage.setItem(ANNOTATIONS_STORAGE_KEY, serializeAnnotationStore(store));
+    } catch { /* Local persistence is optional. */ }
+  };
+  const stepHistory = (step: (h: History<DesignAnnotation[]>) => History<DesignAnnotation[]>): void => {
+    const next = step(historyRef.current);
+    if (next === historyRef.current) return;
+    historyRef.current = next;
+    setAnnoIds([]);
+    persistAnnotations(next.present);
+  };
+
+  const changeAnnotations = (next: DesignAnnotation[], opts?: { transient?: boolean }): void => {
+    // A drag repaints on every frame but only lands one undo step, on release.
+    if (!opts?.transient) historyRef.current = pushHistory(historyRef.current, next);
     setAnnotations(next);
     if (!protos.selected) return;
     try {
@@ -317,6 +343,15 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         return;
       }
       if (e.ctrlKey || e.metaKey) {
+        // View — OpenPencil's set: ⌘= in, ⌘- out, ⌘0 100%, ⌘1 fit, ⌘2 selection.
+        if (k === '=' || k === '+') { zoomByStep(1.2); e.preventDefault(); return; }
+        if (k === '-') { zoomByStep(1 / 1.2); e.preventDefault(); return; }
+        if (k === '0') { setZoomPercent(100); e.preventDefault(); return; }
+        if (k === '1') { fitAll(true); e.preventDefault(); return; }
+        if (k === '2') { fitAll(false); e.preventDefault(); return; }
+        if (k === 'a') { setAnnoIds(annotations.filter((a) => !a.hidden && !a.locked).map((a) => a.id)); e.preventDefault(); return; }
+        if (k === 'z') { stepHistory(e.shiftKey ? redo : undo); e.preventDefault(); return; }
+        if (k === 'y') { stepHistory(redo); e.preventDefault(); return; }
         if (e.shiftKey && k === 'g' && chosen.length) { changeAnnotations(ungroupAnnotations(annotations, ids)); e.preventDefault(); }
         else if (k === 'g' && chosen.length >= 2) { changeAnnotations(groupAnnotations(annotations, ids).list); e.preventDefault(); }
         else if (e.shiftKey && k === 'h') { toggleScreenFlag(screens, 'hidden'); if (chosen.length) { changeAnnotations(annotations.map((a) => ids.includes(a.id) ? { ...a, hidden: !a.hidden } : a)); setAnnoIds([]); } e.preventDefault(); }
@@ -330,6 +365,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       if (e.altKey && e.shiftKey && k === 'f' && chosen.length) { flattenSelection(chosen); e.preventDefault(); return; }
       if (e.altKey || e.repeat) return;
       if (e.shiftKey) {
+        if (e.key === '1') { fitAll(true); e.preventDefault(); return; }
+        if (e.key === '2') { fitAll(false); e.preventDefault(); return; }
         if (k === 'a' && selected) { addAutoLayout(selected); e.preventDefault(); }
         else if (k === 'h') { flipScreens(screens, 'flipX'); if (chosen.length) changeAnnotations(ids.reduce((list, id) => flipAnnotation(list, id, 'x'), annotations)); e.preventDefault(); }
         else if (k === 'v') { flipScreens(screens, 'flipY'); if (chosen.length) changeAnnotations(ids.reduce((list, id) => flipAnnotation(list, id, 'y'), annotations)); e.preventDefault(); }
@@ -343,7 +380,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         e.preventDefault();
         return;
       }
-      if (e.key === '0') { fitAll(); e.preventDefault(); return; }
+      // OpenPencil's alternates: ⇧1 fit, ⇧2 zoom to selection.
+      if (e.key === '0') { fitAll(true); e.preventDefault(); return; }
       if (e.key === 'Escape') { setAnnoIds([]); setSelection([]); setTool('select'); return; }
       const next = toolForKey(e.key);
       if (next) {
@@ -553,11 +591,20 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     touchedRef.current = true;
     setView((current) => zoomAt(current, (percent / 100) / current.scale, shell.clientWidth / 2, shell.clientHeight / 2));
   };
-  const fitAll = (): void => {
+  /** Zoom about the viewport centre, so the view never lurches sideways. */
+  const zoomByStep = (factor: number): void => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    touchedRef.current = true;
+    setView((current) => zoomAt(current, factor, shell.clientWidth / 2, shell.clientHeight / 2));
+  };
+  /** `everything` false means zoom to the selection, OpenPencil's ⌘2 / ⇧2. */
+  const fitAll = (everything: boolean): void => {
     const shell = shellRef.current;
     if (!shell || screenItems.length === 0) return;
     const all = screenItems.map((item) => ({ kind: item.kind, id: item.id }));
-    const bounds = selectionBounds(screenItems, selection.length ? selection : all);
+    const target = everything || selection.length === 0 ? all : selection;
+    const bounds = selectionBounds(screenItems, target);
     if (!bounds) return;
     touchedRef.current = true;
     setView(fitBounds(bounds, shell.clientWidth, shell.clientHeight, 64));
@@ -673,7 +720,7 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
       </div>
       <DesignBottomToolbar tool={tool} onToolChange={setTool} frameKind={frameKind} shapeKind={shapeKind}
         onFrameKindChange={setFrameKind} onShapeKindChange={setShapeKind}
-        zoom={Math.round(view.scale * 100)} onZoomChange={setZoomPercent} onFit={fitAll} />
+        zoom={Math.round(view.scale * 100)} onZoomChange={setZoomPercent} onFit={() => fitAll(true)} />
     </main>
     <DesignInspector element={selectedElement} measured={measured} tab={inspectorTab} onTabChange={setInspectorTab} operations={operations} onOperationChange={updateOperation} onSave={saveDraft} onRevert={revertDraft} onOpenAi={onOpenAi}
       shapes={selectedShapes} onShapeGeometry={setShapeGeometry} onShapeStyle={setShapeStyle} />
