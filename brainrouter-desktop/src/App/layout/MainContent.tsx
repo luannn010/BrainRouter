@@ -174,6 +174,9 @@ export interface MainContentProps {
 }
 
 export function MainContent(p: MainContentProps): React.ReactElement {
+  // Design mode's fix-chat flag lives here because both consumers render here:
+  // the studio (mounts the chat rail) and TopbarRight (hosts the toggle).
+  const [designChatOpen, setDesignChatOpen] = React.useState(false);
   const {
     mode, setMode, workrowRef, track, trackOps, railOpen, setRailOpen, sidePanelOpen, sidePinned, sideFullScreen,
     setSidePanelOpen, setSidePinned, sideAnim, sideWidth, setSideWidth, activeSideTab, sideTabs, setActiveSideTab,
@@ -196,6 +199,11 @@ export function MainContent(p: MainContentProps): React.ReactElement {
     setMode('code');
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }, [setMode]);
+  const routeDesignPrompt = React.useCallback((prompt: string): void => {
+    setMode('code');
+    setDraft(prompt);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [setMode, setDraft]);
   const openHomeView = React.useCallback((id: PanelId): void => {
     setMode('code');
     ensurePanel(id);
@@ -207,7 +215,8 @@ export function MainContent(p: MainContentProps): React.ReactElement {
         <div className="workrow design-workrow" ref={workrowRef}>
           <Suspense fallback={<div className="row status"><span className="spinner" /> Loading Design Studio…</div>}>
             <DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} railOpen={railOpen} onOpenRail={() => setRailOpen(true)}
-              chat={{ q, modelChoices, currentModel: info.model, modeLabel, effort }} />
+              chat={{ q, modelChoices, currentModel: info.model, modeLabel, effort }} onRouteToMainChat={routeDesignPrompt}
+              chatOpen={designChatOpen} onChatOpenChange={setDesignChatOpen} />
           </Suspense>
           {/* The studio keeps the side tool rail — Atlas, Files, Artifacts, Review
               all stay reachable beside the canvas. */}
@@ -337,7 +346,8 @@ export function MainContent(p: MainContentProps): React.ReactElement {
         termDockOpen={termDockOpen} setTermDockOpen={setTermDockOpen} sidePanelOpen={sidePanelOpen} sideWidth={sideWidth}
         setSidePanelOpen={setSidePanelOpen} sideFullScreen={sideFullScreen} setSideFullScreen={setSideFullScreen}
         sideTabs={sideTabs} activeSideTab={activeSideTab} ensurePanel={ensurePanel} openBottomDock={openBottomDock}
-        pop={pop} setPop={setPop} openSettings={openSettings} />
+        pop={pop} setPop={setPop} openSettings={openSettings}
+        designChatOpen={designChatOpen} setDesignChatOpen={setDesignChatOpen} />
     </div>
   );
 }

@@ -22,15 +22,22 @@ const TABS: Array<{ id: StudioTab; label: string; hint: string }> = [
 // state — the chat still runs and picks; only the model/mode selects go inert.
 const NO_CHAT_CONTROLS: DesignChatControls = { q: () => { /* no-op */ }, modelChoices: [], modeLabel: '', effort: '' };
 
-export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOpenRail, chat = NO_CHAT_CONTROLS }: { workspaceRoot?: string; branch?: string | null; railOpen?: boolean; onOpenRail?: () => void; chat?: DesignChatControls }): React.ReactElement {
+export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOpenRail, chat = NO_CHAT_CONTROLS, onRouteToMainChat, chatOpen: chatOpenProp, onChatOpenChange }: { workspaceRoot?: string; branch?: string | null; railOpen?: boolean; onOpenRail?: () => void; chat?: DesignChatControls; onRouteToMainChat?: (prompt: string) => void; chatOpen?: boolean; onChatOpenChange?: (open: boolean) => void }): React.ReactElement {
   const [tab, setTab] = useState<StudioTab>('canvas');
-  const [chatOpen, setChatOpen] = useState(false);
-  const protos = usePrototypes();
+  // Design mode controls the fix chat from the app's top-right cluster
+  // (TopbarRight); the side-panel route passes no props and falls back to
+  // local state (opened via the inspector's "Open Fix Chat", closed via the
+  // chat header's ×).
+  const [chatOpenLocal, setChatOpenLocal] = useState(false);
+  const chatOpen = chatOpenProp ?? chatOpenLocal;
+  const setChatOpen = onChatOpenChange ?? setChatOpenLocal;
+  const protos = usePrototypes(workspaceRoot);
   const [device, setDevice] = useState<Device>('desktop');
   // ONE webview for the whole studio — Designs previews it, the inspector drives it,
   // and the fix chat reloads it. No second instance to drift out of sync.
   const previewRef = useRef<PreviewHandle>(null);
   const [picked, setPicked] = useState<PickInfo | null>(null);
+  const [draftContext, setDraftContext] = useState<string | null>(null);
   // Bumped after an agent edit so the Canvas re-reads every frame's HTML.
   const [canvasKey, setCanvasKey] = useState(0);
 
@@ -49,19 +56,6 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
               <Icon name="layout" size={15} />
             </button>
           ) : null}
-          {/* Fix-chat trigger — sits to the LEFT of the brand. Moved off the
-              right edge, where the app's floating top-right cluster (settings ·
-              export · side-panel) covered it. */}
-          <button
-            type="button"
-            className="ds-chat-toggle ds-chat-toggle--icon"
-            aria-pressed={chatOpen}
-            aria-label="Fix chat"
-            title="Fix chat — describe a UI change and BrainRouter edits the prototype"
-            onClick={() => setChatOpen((v) => !v)}
-          >
-            <Icon name="bubble" size={16} />
-          </button>
           <span className="ds-nav-brand ds-eyebrow">Design Studio</span>
         </div>
         <div className="ds-seggroup" role="tablist" aria-label="Design Studio sections">
@@ -86,7 +80,8 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
               previewRef={previewRef}
               picked={picked}
               onPick={setPicked}
-              controls={chat}
+              onOpenAi={() => setChatOpen(true)}
+              onDraftContextChange={setDraftContext}
             />
           )}
         </div>
@@ -95,6 +90,9 @@ export function DesignStudioPanel({ workspaceRoot, branch, railOpen = true, onOp
           <DesignChat
             selected={protos.selected}
             picked={picked?.testid ?? null}
+            draftContext={draftContext}
+            onClose={() => setChatOpen(false)}
+            onRouteToMainChat={onRouteToMainChat ? (prompt) => { setChatOpen(false); onRouteToMainChat(prompt); } : undefined}
             onApplied={() => {
               // Surface the edit on the shared preview: reload if Designs is mounted,
               // otherwise switch to it (mounting loads the just-edited file fresh).

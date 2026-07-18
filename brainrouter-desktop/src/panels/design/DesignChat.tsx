@@ -1,16 +1,21 @@
 // brainrouter-desktop/src/panels/design/DesignChat.tsx
 import React, { useEffect, useRef, useState } from 'react';
+import { Icon } from '../../icons.js';
 import { buildUiFixPrompt } from '../../lib/design/prototypeMeta.js';
+import { buildDesignChatHandoff } from '../../lib/design/designChatHandoff.js';
 import type { PrototypeEntry } from '../../lib/design/prototypeMeta.js';
 import { bridgeQuery } from '../../lib/bridgeQuery.js';
 import type { BrandOverrides } from '../../lib/design/designTokens.js';
 
 type Line = { role: 'you' | 'brainrouter'; text: string };
 
-export function DesignChat({ selected, picked, onApplied }: {
+export function DesignChat({ selected, picked, draftContext, onApplied, onRouteToMainChat, onClose }: {
   selected: PrototypeEntry | null;
   picked: string | null;
+  draftContext?: string | null;
   onApplied: () => void;
+  onRouteToMainChat?: (prompt: string) => void;
+  onClose?: () => void;
 }): React.ReactElement {
   const [draft, setDraft] = useState('');
   const [lines, setLines] = useState<Line[]>([]);
@@ -55,14 +60,21 @@ export function DesignChat({ selected, picked, onApplied }: {
   const submit = (): void => {
     const instruction = draft.trim();
     if (!instruction || !selected || running) return;
-    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked, brandOverrides });
+    const prompt = buildUiFixPrompt({ relPath: selected.path, instruction, pickedRef: picked, brandOverrides, editContext: draftContext });
+    const handoff = buildDesignChatHandoff(prompt);
+    if (!handoff) return;
     setLines((l) => [...l, { role: 'you', text: instruction }]);
-    setDraft(''); runningRef.current = true; setRunning(true); liveRef.current = ''; setLive('');
+    setDraft('');
+    if (onRouteToMainChat) {
+      onRouteToMainChat(handoff.prompt);
+      return;
+    }
+    runningRef.current = true; setRunning(true); liveRef.current = ''; setLive('');
     // hidden:true hides the (verbose) fix PROMPT from the transcript. NOTE: the turn
     // still runs in the ACTIVE session, so its response also streams to the main chat
     // and sets the main running state — full isolation (a dedicated design sub-session)
     // is a documented Task-10 follow-up, not done in v1.
-    window.brainrouter.send({ kind: 'start-turn', prompt, hidden: true });
+    window.brainrouter.send({ kind: 'start-turn', prompt: handoff.prompt, hidden: true });
   };
 
   return (
@@ -70,6 +82,11 @@ export function DesignChat({ selected, picked, onApplied }: {
       <div className="ds-chat-head">
         <span className="ds-eyebrow">Fix UI</span>
         <span className="ds-mono ds-chat-target" data-mono>{selected ? selected.title : 'no prototype'}{picked ? ` · ${picked}` : ''}</span>
+        {onClose ? (
+          <button type="button" className="ds-iconbtn ds-chat-close" aria-label="Close fix chat" title="Close fix chat" onClick={onClose}>
+            <Icon name="close" size={12} />
+          </button>
+        ) : null}
       </div>
       <div className="ds-chat-log">
         {lines.map((l, i) => <div key={i} className={`ds-msg ds-msg--${l.role}`}><span className="ds-eyebrow">{l.role}</span><div>{l.text}</div></div>)}

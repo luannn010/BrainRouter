@@ -8,9 +8,15 @@ import {
   sendToBack, serializeAnnotationStore, toggleAnnotationFlag, type DesignAnnotation,
 } from '../../lib/design/designAnnotations.js';
 import { isEditableTarget, shouldArmElementPicker, toolForKey, type DesignTool, type FrameKind, type ShapeKind } from '../../lib/design/designTools.js';
+import { fitBounds, panBy, screenToWorld, snapTo, wheelGesture, zoomAt, type ViewBounds, type Viewport } from '../../lib/design/canvasViewport.js';
+import { idsOfKind, isSelected, marqueeSelect, selectOnly, selectionBounds, toggleSelection, type SelectableItem, type Selection } from '../../lib/design/designSelection.js';
+import { useCanvasDocument } from '../../lib/design/useCanvasDocument.js';
+import { useCanvasFrames } from '../../lib/design/useCanvasFrames.js';
+import type { CanvasNode } from '../../lib/design/canvasModel.js';
 import type { MeasuredElement } from '../../lib/design/designMeasure.js';
 import type { ConstraintBox } from '../../lib/design/designConstraints.js';
 import { PreviewCanvas, type PreviewHandle, type Device, type PickInfo } from './PreviewCanvas.js';
+import { DEVICE_SIZE, DesignScreen } from './DesignScreen.js';
 import { DesignBottomToolbar } from './DesignBottomToolbar.js';
 import { StageOverlay } from './StageOverlay.js';
 import { DesignInspector, type InspectorTab } from './DesignInspector.js';
@@ -21,6 +27,8 @@ import type { PrototypeFrame } from '../../lib/design/useCanvasFrames.js';
 
 const DEVICES: Device[] = ['desktop', 'tablet', 'phone'];
 const DRAFT_KEY = 'brainrouter.design-tab.drafts';
+/** The live surface floats above every screen frame; frame z is a small index. */
+const LIVE_LAYER_Z = 1000;
 
 export function DesignsView({ workspaceRoot, protos, device, setDevice, previewRef, picked, onPick, onOpenAi, onDraftContextChange }: {
   workspaceRoot?: string;
@@ -35,7 +43,6 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
 }): React.ReactElement {
   const [resource, setResource] = useState<DesignResource>('files');
   const [tool, setTool] = useState<DesignTool>('select');
-  const [zoom, setZoom] = useState(100);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('design');
   const [frame, setFrame] = useState<PrototypeFrame | null>(null);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
@@ -47,8 +54,6 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   // Session clipboard for annotations (never the OS clipboard).
   const [clipboard, setClipboard] = useState<DesignAnnotation | null>(null);
   const [isPanning, setIsPanning] = useState(false);
-  // The shell can't hand the preview a resolvable %-height, so it is measured
-  // and the stage sized in explicit px (see stageMetrics.ts).
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [shellSize, setShellSize] = useState<{ w: number; h: number } | null>(null);
   // Bumped on webview dom-ready so pick-arming retries once the surface can pick.
@@ -57,6 +62,36 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   // The selected element's real box + computed styles, read back from the
   // preview so the inspector shows what IS rather than a placeholder.
   const [measured, setMeasured] = useState<MeasuredElement | null>(null);
+
+  // --- World canvas -------------------------------------------------------
+  // The shell is a fixed viewport; one world layer inside it carries
+  // translate(pan) scale(zoom) and every screen is absolutely positioned in
+  // world coordinates. Positions persist in the shared CanvasDocument.
+  const [view, setView] = useState<Viewport>({ scale: 1, x: 64, y: 64 });
+  const [selection, setSelection] = useState<Selection>([]);
+  const [marquee, setMarquee] = useState<ViewBounds | null>(null);
+  const [dragNodes, setDragNodes] = useState<CanvasNode[] | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const spaceRef = useRef(false);
+  /** Set once the user pans or zooms; until then the board stays auto-framed. */
+  const touchedRef = useRef(false);
+
+  const { frames } = useCanvasFrames();
+  const canvasEntries = useMemo(() => protos.entries.map((entry) => ({ id: entry.id })), [protos.entries]);
+  const canvas = useCanvasDocument(canvasEntries);
+  const nodes = canvas.document.nodes;
+  const shownNodes = dragNodes ?? nodes;
+  const contentById = useMemo(() => new Map(frames.map((item) => [item.id, item.content])), [frames]);
+  const titleById = useMemo(() => new Map(protos.entries.map((entry) => [entry.id, entry.title])), [protos.entries]);
+  const activeNode = shownNodes.find((node) => node.prototypeId === protos.selected?.id) ?? null;
+  const screenItems: SelectableItem[] = useMemo(() => shownNodes.map((node) => ({
+    kind: 'screen' as const,
+    id: node.prototypeId,
+    bounds: { x: node.position.x, y: node.position.y, w: node.width, h: node.height },
+  })), [shownNodes]);
+
+  const saveNodes = (next: CanvasNode[]): void => canvas.save({ ...canvas.document, nodes: next });
 
   useEffect(() => {
     let active = true;
@@ -88,6 +123,36 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // Ctrl/Cmd + wheel must preventDefault or the whole app zooms instead of the
+  // canvas — React's synthetic onWheel is passive, so this is a native listener.
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const onWheel = (e: WheelEvent): void => {
+      const rect = shell.getBoundingClientRect();
+      const gesture = wheelGesture(e);
+      e.preventDefault();
+      touchedRef.current = true;
+      setView((current) => gesture.kind === 'zoom'
+        ? zoomAt(current, gesture.factor, e.clientX - rect.left, e.clientY - rect.top)
+        : panBy(current, gesture.dx, gesture.dy));
+    };
+    shell.addEventListener('wheel', onWheel, { passive: false });
+    return () => shell.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // Frame the ACTIVE screen until the user takes the view over. Fitting the
+  // whole board here would open this tab at ~24% on a narrow shell, and the
+  // Designs tab is an editing surface — you need to be able to read it. "Fit"
+  // still frames everything on demand. Re-running on resize matters: the first
+  // measurement lands before the flex layout settles.
+  useEffect(() => {
+    if (touchedRef.current || !shellSize || shellSize.w < 2) return;
+    const focus = activeNode ?? shownNodes[0];
+    if (!focus) return;
+    setView(fitBounds({ x: focus.position.x, y: focus.position.y, w: focus.width, h: focus.height }, shellSize.w, shellSize.h, 48));
+  }, [shellSize, activeNode?.prototypeId, shownNodes.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const elements = useMemo(() => frame ? extractDesignElements(frame.content) : [], [frame]);
   const selectedElement = elements.find((element) => element.ref === selectedRef) ?? resolvePickedElement(elements, picked) ?? null;
@@ -150,6 +215,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (isEditableTarget(e.target as HTMLElement | null)) return;
+      // Space arms hand-panning for as long as it is held, on any tool.
+      if (e.code === 'Space') { spaceRef.current = true; e.preventDefault(); return; }
       const k = e.key.toLowerCase();
       const selected = selectedAnnoId ? annotations.find((a) => a.id === selectedAnnoId) ?? null : null;
       if ((e.ctrlKey || e.metaKey) && !e.altKey) {
@@ -173,7 +240,8 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         if (selected) { changeAnnotations(removeAnnotation(annotations, selected.id)); setSelectedAnnoId(null); e.preventDefault(); }
         return;
       }
-      if (e.key === 'Escape') { setSelectedAnnoId(null); setTool('select'); return; }
+      if (e.key === '0') { fitAll(); e.preventDefault(); return; }
+      if (e.key === 'Escape') { setSelectedAnnoId(null); setSelection([]); setTool('select'); return; }
       const next = toolForKey(e.key);
       if (next) {
         setTool(next.tool);
@@ -182,29 +250,120 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
         e.preventDefault();
       }
     };
+    const onKeyUp = (e: KeyboardEvent): void => { if (e.code === 'Space') spaceRef.current = false; };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
   }); // no deps — re-attached per render so the handler always sees fresh state
 
-  // Hand tool: drag scrolls the shell. The overlay masks the webview/iframe
-  // (which would otherwise swallow the pointer), and the event bubbles here.
+  // One pointer entry point for the canvas: pan, drag a screen, select a
+  // screen, or rubber-band. The screen BODY is deliberately not a drag handle —
+  // the live prototype stays clickable, exactly as it was before the canvas.
   const onShellPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
-    if (tool !== 'hand' || e.button !== 0) return;
     const shell = shellRef.current;
     if (!shell) return;
-    const start = { x: e.clientX, y: e.clientY, left: shell.scrollLeft, top: shell.scrollTop };
-    setIsPanning(true);
+    const target = e.target as HTMLElement;
+    const wantsPan = e.button === 1 || spaceRef.current || tool === 'hand';
+    if (e.button !== 0 && !wantsPan) return;
+
+    if (wantsPan) {
+      const start = { x: e.clientX, y: e.clientY, view: viewRef.current };
+      touchedRef.current = true;
+      setIsPanning(true);
+      const onMove = (ev: PointerEvent): void => setView(panBy(start.view, ev.clientX - start.x, ev.clientY - start.y));
+      const onUp = (): void => {
+        setIsPanning(false);
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      e.preventDefault();
+      return;
+    }
+
+    const screenEl = target.closest<HTMLElement>('.ds-screen, .ds-live-screen');
+    const id = screenEl?.dataset.screenId ?? '';
+    if (screenEl && id) {
+      const node = nodes.find((item) => item.prototypeId === id);
+      const next = e.shiftKey
+        ? toggleSelection(selection, { kind: 'screen', id })
+        : (isSelected(selection, 'screen', id) ? selection : selectOnly({ kind: 'screen', id }));
+      setSelection(next);
+      if (id !== protos.selected?.id) protos.select(id);
+      if (!node || node.locked || !target.closest('.ds-screen-head')) return;
+
+      const moving = new Set(idsOfKind(next, 'screen'));
+      moving.add(id);
+      const origins = new Map(nodes.filter((item) => moving.has(item.prototypeId)).map((item) => [item.prototypeId, item.position]));
+      const grid = canvas.document.preferences.snapEnabled ? canvas.document.preferences.gridSize : 1;
+      const start = { x: e.clientX, y: e.clientY, scale: viewRef.current.scale };
+      let latest = nodes;
+      const onMove = (ev: PointerEvent): void => {
+        const dx = (ev.clientX - start.x) / start.scale;
+        const dy = (ev.clientY - start.y) / start.scale;
+        latest = nodes.map((item) => {
+          const origin = origins.get(item.prototypeId);
+          return origin ? { ...item, position: { x: snapTo(origin.x + dx, grid), y: snapTo(origin.y + dy, grid) } } : item;
+        });
+        setDragNodes(latest);
+      };
+      const onUp = (): void => {
+        setDragNodes(null);
+        saveNodes(latest);
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      e.preventDefault();
+      return;
+    }
+
+    if (tool !== 'select') return;
+    const rect = shell.getBoundingClientRect();
+    const origin = screenToWorld(viewRef.current, e.clientX - rect.left, e.clientY - rect.top);
     const onMove = (ev: PointerEvent): void => {
-      shell.scrollLeft = start.left - (ev.clientX - start.x);
-      shell.scrollTop = start.top - (ev.clientY - start.y);
+      const at = screenToWorld(viewRef.current, ev.clientX - rect.left, ev.clientY - rect.top);
+      setMarquee({
+        x: Math.min(origin.x, at.x), y: Math.min(origin.y, at.y),
+        w: Math.abs(at.x - origin.x), h: Math.abs(at.y - origin.y),
+      });
     };
     const onUp = (): void => {
-      setIsPanning(false);
+      setMarquee((box) => {
+        setSelection(box && (box.w > 2 || box.h > 2) ? marqueeSelect(screenItems, box) : []);
+        return null;
+      });
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+  };
+
+  const setZoomPercent = (percent: number): void => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    touchedRef.current = true;
+    setView((current) => zoomAt(current, (percent / 100) / current.scale, shell.clientWidth / 2, shell.clientHeight / 2));
+  };
+  const fitAll = (): void => {
+    const shell = shellRef.current;
+    if (!shell || screenItems.length === 0) return;
+    const all = screenItems.map((item) => ({ kind: item.kind, id: item.id }));
+    const bounds = selectionBounds(screenItems, selection.length ? selection : all);
+    if (!bounds) return;
+    touchedRef.current = true;
+    setView(fitBounds(bounds, shell.clientWidth, shell.clientHeight, 64));
+  };
+  // Device presets resize the active screen rather than scaling the whole
+  // stage — on a canvas, "phone" is a property of one screen, not the view.
+  const applyDevice = (next: Device): void => {
+    setDevice(next);
+    if (!activeNode) return;
+    const size = DEVICE_SIZE[next];
+    saveNodes(nodes.map((node) => node.prototypeId === activeNode.prototypeId ? { ...node, width: size.w, height: size.h } : node));
   };
 
   // Constraints need the measured geometry of the ref they target; only the
@@ -237,22 +396,39 @@ export function DesignsView({ workspaceRoot, protos, device, setDevice, previewR
     } catch { /* Local persistence is optional. */ }
     previewRef.current?.reload();
   };
-  const selectLayer = (ref: string): void => { setSelectedRef(ref); setInspectorTab('design'); const testid = elements.find((element) => element.ref === ref)?.testid; if (testid) onPick({ testid, tag: elements.find((element) => element.ref === ref)?.tag ?? 'div', label: testid }); };
+  const selectLayer = (ref: string): void => {
+    setSelectedRef(ref);
+    setInspectorTab('design');
+    const element = elements.find((item) => item.ref === ref);
+    if (element?.testid) onPick({ testid: element.testid, tag: element.tag, label: element.testid });
+  };
 
   return <div className="ds-designs ds-design-editor">
     <DesignResourceRail activeResource={resource} onResourceChange={setResource} entries={protos.entries} selected={protos.selected} onSelect={protos.select} elements={elements} selectedRef={selectedRef} onLayerSelect={selectLayer} />
     <main className="ds-editor-stage">
-      <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => setDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
+      <div className="ds-canvas-bar"><div className="ds-stage-title"><Icon name="file" size={13} /><span>{protos.selected?.title ?? 'No flow'}</span><small data-mono>{protos.selected?.path ?? 'Choose a file from the left rail'}</small></div><span className="ds-nav-spacer" />{DEVICES.map((item) => <button key={item} type="button" className="ds-iconbtn" aria-pressed={device === item} onClick={() => applyDevice(item)}>{item}</button>)}<button type="button" className="ds-iconbtn" onClick={() => previewRef.current?.reload()} aria-label="Reload prototype"><Icon name="refresh" size={13} /></button></div>
       <div ref={shellRef} className={`ds-stage-shell ds-stage-shell--${tool}${isPanning ? ' is-panning' : ''}`} onPointerDown={onShellPointerDown}>
-        <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device} zoom={zoom} shellSize={shellSize}
-          overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={zoom} annotations={annotations} selectedId={selectedAnnoId}
-            clipboard={clipboard} onSelect={setSelectedAnnoId} onChange={changeAnnotations} onClipboardChange={setClipboard} />}
-          onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
-        <CanvasRulers zoom={zoom} />
+        <div className="ds-design-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
+          {shownNodes.map((node) => <DesignScreen key={node.prototypeId} node={node}
+            title={titleById.get(node.prototypeId) ?? node.prototypeId}
+            content={contentById.get(node.prototypeId) ?? null}
+            active={node.prototypeId === protos.selected?.id}
+            selected={isSelected(selection, 'screen', node.prototypeId)} />)}
+          {activeNode ? <div className={`ds-live-screen${isSelected(selection, 'screen', activeNode.prototypeId) ? ' is-selected' : ''}`} data-screen-id={activeNode.prototypeId}
+            style={{ left: activeNode.position.x, top: activeNode.position.y, width: activeNode.width, height: activeNode.height, zIndex: LIVE_LAYER_Z }}>
+            <PreviewCanvas ref={previewRef} workspaceRoot={workspaceRoot} selected={protos.selected} device={device}
+              overlay={<StageOverlay tool={tool} frameKind={frameKind} shapeKind={shapeKind} zoom={view.scale * 100} annotations={annotations} selectedId={selectedAnnoId}
+                clipboard={clipboard} onSelect={setSelectedAnnoId} onChange={changeAnnotations} onClipboardChange={setClipboard} />}
+              onWebviewReady={(wv) => { setPreviewReady((tick) => tick + 1); if (operations.length) void previewRef.current?.applyDraft(operations, wv); }} />
+          </div> : null}
+          {marquee ? <div className="ds-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }} /> : null}
+        </div>
+        {!protos.selected && <div className="ds-empty">No flow selected. Pick one on the left — the sample flows load automatically.</div>}
+        <CanvasRulers view={view} width={shellSize?.w ?? 0} height={shellSize?.h ?? 0} />
       </div>
       <DesignBottomToolbar tool={tool} onToolChange={setTool} frameKind={frameKind} shapeKind={shapeKind}
         onFrameKindChange={setFrameKind} onShapeKindChange={setShapeKind}
-        zoom={zoom} onZoomChange={setZoom} onFit={() => setZoom(100)} />
+        zoom={Math.round(view.scale * 100)} onZoomChange={setZoomPercent} onFit={fitAll} />
     </main>
     <DesignInspector element={selectedElement} measured={measured} tab={inspectorTab} onTabChange={setInspectorTab} operations={operations} onOperationChange={updateOperation} onSave={saveDraft} onRevert={revertDraft} onOpenAi={onOpenAi} />
   </div>;

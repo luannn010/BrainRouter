@@ -35,16 +35,18 @@ export function fileUrlFor(workspaceRoot: string, relPath: string): string {
  * place, keeps it self-contained + on the BrainRouter Memory Instrument brand,
  * and — when the user picked an element in the Test canvas — targets it.
  */
-export function buildUiFixPrompt(input: { relPath: string; instruction: string; pickedRef?: string | null; brandOverrides?: BrandOverrides | null }): string {
+export function buildUiFixPrompt(input: { relPath: string; instruction: string; pickedRef?: string | null; brandOverrides?: BrandOverrides | null; editContext?: string | null }): string {
   const steer = buildDesignSteering(BRAINROUTER_SIGNATURE);
   const picked = input.pickedRef ? `\nThe selected element is \`[data-testid="${input.pickedRef}"]\` — scope the change to it unless the instruction says otherwise.` : '';
   const brand = input.brandOverrides ? `\nCurrent workspace brand overrides (honor these when relevant):\n${JSON.stringify(input.brandOverrides)}` : '';
+  const editContext = input.editContext ? `\nCurrent Design inspector draft properties (preserve these unless the instruction changes them):\n${input.editContext}` : '';
   return [
     `Edit the existing prototype file \`${input.relPath}\` in place to satisfy this UI change:`,
     ``,
     `> ${input.instruction}`,
     picked,
     brand,
+    editContext,
     ``,
     `Rules:`,
     `- Keep the file a SINGLE self-contained HTML document (inline CSS/JS, no external URLs).`,

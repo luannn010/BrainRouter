@@ -35,6 +35,10 @@ export interface TopbarRightProps {
   pop: PopId;
   setPop: Dispatch<SetStateAction<PopId>>;
   openSettings: (section: SettingsSection) => void;
+  /** Design mode's fix chat — the toggle lives here so it sits on the same
+   *  line, in the same style, as the rest of the top-right cluster. */
+  designChatOpen: boolean;
+  setDesignChatOpen: Dispatch<SetStateAction<boolean>>;
 }
 
 export function TopbarRight(p: TopbarRightProps): React.ReactElement {
@@ -42,6 +46,7 @@ export function TopbarRight(p: TopbarRightProps): React.ReactElement {
     mode, homeMode, envRoom, envOpen, setEnvOpen, q, termDockOpen, setTermDockOpen,
     sidePanelOpen, sideWidth, setSidePanelOpen, sideFullScreen, setSideFullScreen,
     sideTabs, activeSideTab, ensurePanel, openBottomDock, pop, setPop, openSettings,
+    designChatOpen, setDesignChatOpen,
   } = p;
   // Environment and bottom-terminal toggles are Code-only. Track and Design still
   // have the right-side views rail — Track for PR / checks / tasks, Design for the
@@ -57,6 +62,19 @@ export function TopbarRight(p: TopbarRightProps): React.ReactElement {
   const showEnv = isCode && !homeMode;
   return (
     <span className="topbar-right" style={offRail ? { right: sideWidth + 12 } : undefined}>
+      {mode === 'design' ? (
+        <>
+          <button type="button" className={`top-toggle${designChatOpen ? ' active' : ''}`}
+            title="Fix chat — describe a UI change and BrainRouter edits the prototype"
+            aria-label="Fix chat" aria-pressed={designChatOpen}
+            onClick={() => setDesignChatOpen((o) => !o)}>
+            <Icon name="bubble" size={15} />
+          </button>
+          {/* Fix chat is a studio tool, not a window/layout control — divide
+              it off from the layout cluster so the group reads cleanly. */}
+          <span className="topbar-div" aria-hidden="true" />
+        </>
+      ) : null}
       {showEnv ? (
         <button type="button" className={`app-switcher${envOpen ? ' active' : ''}`} title="Environment"
           aria-label="Environment" aria-expanded={envOpen} onClick={() => {

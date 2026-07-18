@@ -261,7 +261,10 @@
 .design-studio .ds-stage-title { display:flex; align-items:center; gap:7px; min-width:0; }
 .design-studio .ds-stage-title span { color:var(--ds-text); font-size:12px; font-weight:600; }
 .design-studio .ds-stage-title small { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ds-text-3); font:10px var(--ds-mono); }
-.design-studio .ds-stage-shell { flex:1; min-height:0; position:relative; overflow:auto; scrollbar-gutter:stable both-edges; background-color:#101316; background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px); background-size:24px 24px; }
+/* The shell is a fixed viewport; one world layer inside it carries pan+zoom.
+   touch-action:none so a trackpad pan reaches the wheel handler instead of
+   being consumed as a browser scroll gesture. */
+.design-studio .ds-stage-shell { flex:1; min-height:0; position:relative; overflow:hidden; touch-action:none; background-color:#101316; background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px); background-size:24px 24px; }
 /* One distinct cursor per tool, so the active mode is always visible. */
 .design-studio .ds-stage-shell--select { cursor:default; }
 .design-studio .ds-stage-shell--hand { cursor:grab; }
@@ -269,15 +272,25 @@
 .design-studio .ds-stage-shell--frame, .design-studio .ds-stage-shell--shape { cursor:crosshair; }
 .design-studio .ds-stage-shell--text { cursor:text; }
 .design-studio .ds-stage-shell--inspect { cursor:zoom-in; }
-/* The preview hugs the (explicitly sized) zoom wrapper but never shrinks
-   below the shell, so a small stage stays centered and a zoomed one scrolls. */
-.design-studio .ds-stage-shell .ds-preview { min-width:100%; min-height:100%; width:fit-content; height:fit-content; box-sizing:border-box; padding:28px; display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start; }
-/* Layout-space footprint of the scaled stage — transform:scale creates no
-   layout overflow, so this wrapper is what makes zoom > 100% scrollable. */
-.design-studio .ds-stage-zoom { flex:none; position:relative; transition:width 180ms cubic-bezier(.2,.8,.2,1),height 180ms cubic-bezier(.2,.8,.2,1); }
-/* margin:0 (not auto): the stage must sit at the wrapper's origin so the
-   top-left-scaled stage exactly fills the wrapper's layout footprint. */
-.design-studio .ds-stage-shell .ds-stage { margin:0; box-shadow:0 20px 50px rgba(0,0,0,.42); transition:transform 180ms cubic-bezier(.2,.8,.2,1); }
+/* --- World canvas: every screen is absolutely positioned in world
+       coordinates and the single world layer carries translate+scale. --- */
+.design-studio .ds-design-world { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; }
+.design-studio .ds-screen { position:absolute; }
+/* The title bar is the drag handle; the body stays interactive so the live
+   prototype is still drivable. It sits above the frame, outside its box. */
+.design-studio .ds-screen-head { position:absolute; top:-22px; left:0; right:0; height:20px; display:flex; align-items:center; gap:6px; padding:0 2px; font-size:11px; color:var(--ds-text-3); cursor:grab; user-select:none; white-space:nowrap; overflow:hidden; }
+.design-studio .ds-screen-head span { overflow:hidden; text-overflow:ellipsis; }
+.design-studio .ds-screen-head small { margin-left:auto; opacity:.6; font:9px var(--ds-mono); }
+.design-studio .ds-screen.is-selected .ds-screen-head { color:var(--ds-accent); }
+.design-studio .ds-screen.is-locked .ds-screen-head { cursor:not-allowed; }
+.design-studio .ds-screen-body, .design-studio .ds-live-screen { position:relative; width:100%; height:100%; overflow:hidden; border:1px solid var(--ds-border); border-radius:var(--ds-radius-card); background:var(--ds-surface); box-shadow:0 20px 50px rgba(0,0,0,.42); }
+.design-studio .ds-live-screen { position:absolute; }
+.design-studio .ds-screen.is-selected .ds-screen-body, .design-studio .ds-live-screen.is-selected { border-color:var(--ds-accent); box-shadow:0 0 0 2px var(--ds-accent-wash),0 20px 50px rgba(0,0,0,.42); }
+.design-studio .ds-screen-doc { width:100%; height:100%; border:0; background:#fff; pointer-events:none; }
+.design-studio .ds-screen-blank { width:100%; height:100%; background:var(--ds-bg); }
+.design-studio .ds-stage-shell .ds-stage { position:absolute; inset:0; width:auto; height:auto; margin:0; border:0; border-radius:0; }
+.design-studio .ds-marquee { position:absolute; border:1px solid var(--ds-accent); background:var(--ds-accent-wash); pointer-events:none; }
+.design-studio .ds-stage-shell > .ds-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; }
 /* --- Annotation layer (Frame / Shape / Text tools) — host DOM above the
        preview surface; never part of the prototype's HTML. --- */
 .design-studio .ds-anno-layer { position:absolute; inset:0; z-index:3; pointer-events:none; user-select:none; }

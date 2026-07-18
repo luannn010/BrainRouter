@@ -7,10 +7,8 @@ import { buildMeasureScript, MEASURED_CSS_PROPERTIES, parseMeasurement, type Mea
 import type { ConstraintBox } from '../../lib/design/designConstraints.js';
 import { fileUrlFor, type PrototypeEntry } from '../../lib/design/prototypeMeta.js';
 import { markWebviewReady, queueWebviewUrl } from '../../lib/design/webviewLifecycle.js';
-import { computeStageMetrics } from '../../lib/design/stageMetrics.js';
 
 export type Device = 'desktop' | 'tablet' | 'phone';
-const DEVICE_W: Record<Device, number | null> = { desktop: null, tablet: 820, phone: 390 };
 
 export type PickInfo = { testid: string | null; tag: string; label: string; w?: number; h?: number };
 
@@ -35,15 +33,12 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
   workspaceRoot?: string;
   selected: PrototypeEntry | null;
   device: Device;
-  zoom?: number;
-  /** Measured .ds-stage-shell size — the shell can't hand the surface a
-   *  resolvable percentage height, so the stage is sized in explicit px. */
-  shellSize?: { w: number; h: number } | null;
-  /** Rendered inside the (zoom-scaled) stage, above the preview surface —
-   *  the annotation/mask layer. */
+  /** Rendered inside the stage, above the preview surface — the annotation
+   *  layer. The stage fills its screen frame, which the world transform
+   *  scales, so annotations track zoom for free. */
   overlay?: React.ReactNode;
   onWebviewReady?: (wv: WebviewEl) => void;
-}>(function PreviewCanvas({ workspaceRoot, selected, device, zoom = 100, shellSize, overlay, onWebviewReady }, ref) {
+}>(function PreviewCanvas({ workspaceRoot, selected, device, overlay, onWebviewReady }, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const wvRef = useRef<WebviewEl | null>(null);
   // Electron loads the prototype as a hardened <webview> + file:// url. The
@@ -211,23 +206,7 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
     },
   }), []);
 
-  const maxW = DEVICE_W[device];
-  // The zoom wrapper's LAYOUT size is the scaled size — transform:scale never
-  // creates layout overflow, so without it the shell could not scroll a
-  // zoomed-in stage. The stage keeps its base size and scales visually; the
-  // overlay lives inside it, so annotations track zoom for free.
-  const metrics = shellSize ? computeStageMetrics({ shellW: shellSize.w, shellH: shellSize.h, zoom: zoom ?? 100, deviceWidth: maxW }) : null;
-  return (
-    <div className="ds-preview">
-      <div className="ds-stage-zoom" style={metrics ? { width: metrics.scaledW, height: metrics.scaledH } : undefined}>
-        <div className={`ds-stage ds-stage--${device}`} ref={hostRef}
-          style={metrics
-            ? { width: metrics.baseW, height: metrics.baseH, transform: `scale(${metrics.scale})`, transformOrigin: 'top left' }
-            : (maxW ? { maxWidth: maxW } : undefined)}>
-          {overlay}
-        </div>
-      </div>
-      {!selected && <div className="ds-empty">No flow selected. Pick one on the left — the sample flows load automatically.</div>}
-    </div>
-  );
+  // The screen frame on the world canvas owns the size and the world transform
+  // owns the scale, so the stage just fills whatever box it is given.
+  return <div className={`ds-stage ds-stage--${device}`} ref={hostRef}>{overlay}</div>;
 });

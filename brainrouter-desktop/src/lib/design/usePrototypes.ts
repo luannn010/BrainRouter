@@ -12,7 +12,7 @@ export interface PrototypesApi {
   error: string | null;
 }
 
-export function usePrototypes(): PrototypesApi {
+export function usePrototypes(workspaceRoot?: string): PrototypesApi {
   const [entries, setEntries] = useState<PrototypeEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,7 +31,11 @@ export function usePrototypes(): PrototypesApi {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    setEntries([]);
+    setSelectedId(null);
+    void load();
+  }, [load, workspaceRoot]);
 
   return {
     entries,
