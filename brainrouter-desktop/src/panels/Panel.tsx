@@ -16,7 +16,7 @@ export type PanelId = 'context' | 'files' | 'file' | 'editor' | 'diff' | 'termin
  * main surface. Named rather than repeated inline: it appears in five files,
  * and every one of them conflicted when two branches each added a mode.
  */
-export type WorkspaceMode = 'chat' | 'track' | 'code' | 'design' | 'meetings';
+export type WorkspaceMode = 'chat' | 'track' | 'code' | 'meetings';
 
 export const PANEL_DEFS: Array<{ id: PanelId; title: string; icon: string }> = [
   { id: 'context', title: 'Context', icon: 'layout-right' },

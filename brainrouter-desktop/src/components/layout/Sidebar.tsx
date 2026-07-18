@@ -164,7 +164,10 @@ export function Sidebar(p: SidebarProps): React.ReactElement | null {
       <div className="rail-card">
         {/* Workspace mode switcher — Chat · Code · Track · Design over the same workspace. */}
         <div className="mode-switch" role="tablist" aria-label="Workspace mode">
-          {([['chat', 'bubble', 'Chat'], ['code', 'code', 'Code'], ['track', 'tasks', 'Track'], ['design', 'design-studio', 'Design'], ['meetings', 'mic', 'Meetings']] as const).map(([m, icon, label]) => (
+          {/* Design is not here: it opens as its own window from the row above
+              the account, so the canvas gets a whole window instead of
+              competing with the chat for this one. */}
+          {([['chat', 'bubble', 'Chat'], ['code', 'code', 'Code'], ['track', 'tasks', 'Track'], ['meetings', 'mic', 'Meetings']] as const).map(([m, icon, label]) => (
             <button key={m} role="tab" data-mode={m} aria-selected={p.mode === m} className={`mode-seg${p.mode === m ? ' active' : ''}`}
               onClick={() => p.setMode(m)} title={`${label} mode`}>
               <Icon name={icon} size={13} /><span>{label}</span>
@@ -324,6 +327,14 @@ export function Sidebar(p: SidebarProps): React.ReactElement | null {
           {query && visibleProjects.length === 0 ? <div className="proj-empty">No matching projects</div> : null}
           <button className="project-row add-project" onClick={addProject}><Icon name="folder-plus" size={15} /><span>Add project</span></button>
         </div>
+      {/* Design opens its own window on the current project rather than taking
+          over this one. Sits directly above the account row. */}
+      <button type="button" className="rail-design-row" onClick={() => { void window.brainrouter.openDesignWindow(info.workspaceRoot); }}
+        title="Open the Design Studio in a new window">
+        <Icon name="design-studio" size={14} />
+        <span>Design</span>
+        <small>New window</small>
+      </button>
       {/* DESK-5m — plain identity row: Settings lives in the top-right
           gear and All commands in ⌘K, so no menu and no chevron here. */}
       <button type="button" className="account-row" onClick={p.openAccountSettings}

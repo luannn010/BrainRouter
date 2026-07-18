@@ -52,7 +52,7 @@ export function TopbarRight(p: TopbarRightProps): React.ReactElement {
   // have the right-side views rail — Track for PR / checks / tasks, Design for the
   // same tool surfaces (Atlas, Files, Artifacts) beside the studio.
   const isCode = mode === 'code';
-  const hasRightRail = isCode || mode === 'track' || mode === 'design';
+  const hasRightRail = isCode || mode === 'track';
   // The pill is absolute, pinned to the window's right edge. When the side rail
   // is open (and not full-screen), pin it to the LEFT of the rail instead so it
   // floats over the chat — otherwise it overlays the rail's tab strip (covering
@@ -62,19 +62,7 @@ export function TopbarRight(p: TopbarRightProps): React.ReactElement {
   const showEnv = isCode && !homeMode;
   return (
     <span className="topbar-right" style={offRail ? { right: sideWidth + 12 } : undefined}>
-      {mode === 'design' ? (
-        <>
-          <button type="button" className={`top-toggle${designChatOpen ? ' active' : ''}`}
-            title="Fix chat — describe a UI change and BrainRouter edits the prototype"
-            aria-label="Fix chat" aria-pressed={designChatOpen}
-            onClick={() => setDesignChatOpen((o) => !o)}>
-            <Icon name="bubble" size={15} />
-          </button>
-          {/* Fix chat is a studio tool, not a window/layout control — divide
-              it off from the layout cluster so the group reads cleanly. */}
-          <span className="topbar-div" aria-hidden="true" />
-        </>
-      ) : null}
+      {/* Fix chat moved with the studio: it lives in the Design window now. */}
       {showEnv ? (
         <button type="button" className={`app-switcher${envOpen ? ' active' : ''}`} title="Environment"
           aria-label="Environment" aria-expanded={envOpen} onClick={() => {

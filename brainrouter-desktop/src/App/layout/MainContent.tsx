@@ -216,28 +216,9 @@ export function MainContent(p: MainContentProps): React.ReactElement {
 
   return (
     <div className="main">
-      {mode === 'design' ? (
-        <div className="workrow design-workrow" ref={workrowRef}>
-          <Suspense fallback={<div className="row status"><span className="spinner" /> Loading Design Studio…</div>}>
-            <DesignStudioPanel workspaceRoot={info.workspaceRoot} branch={branches.current} railOpen={railOpen} onOpenRail={() => setRailOpen(true)}
-              chat={{ q, modelChoices, currentModel: info.model, modeLabel, effort }} onRouteToMainChat={routeDesignPrompt}
-              chatOpen={designChatOpen} onChatOpenChange={setDesignChatOpen} />
-          </Suspense>
-          {/* The studio keeps the side tool rail — Atlas, Files, Artifacts, Review
-              all stay reachable beside the canvas. */}
-          {sidePanelOpen && !sidePinned && !sideFullScreen ? (
-            <div className="side-scrim" onClick={() => setSidePanelOpen(false)} aria-hidden="true" />
-          ) : null}
-          <ViewsRail sideAnim={sideAnim} sideWidth={sideWidth} setSideWidth={setSideWidth} sideFullScreen={sideFullScreen}
-            setSidePanelOpen={setSidePanelOpen} sidePinned={sidePinned} setSidePinned={setSidePinned}
-            activeSideTab={activeSideTab} sideTabs={sideTabs} setActiveSideTab={setActiveSideTab} closeSideTab={closeSideTab} reorderSideTab={reorderSideTab}
-            tabTitle={tabTitle}
-            renderPanelBody={renderPanelBody} openSideView={openSideView} lastPlan={lastPlan} changedFiles={changedFiles}
-            backgroundTasks={backgroundTasks} fleet={fleet} toolLog={toolLog} schedules={schedules}
-            worktrees={worktrees} review={review} requirements={requirements} annotations={annotations} artifacts={artifacts} ci={ci}
-            envRoom={false} />
-        </div>
-      ) : mode === 'meetings' ? (
+      {/* No 'design' branch: the Design Studio is its own window now, opened
+          from the row above the account in the sidebar. */}
+      {mode === 'meetings' ? (
         <div className="workrow" ref={workrowRef}>
           <MeetingsView ops={meetingsOps} />
         </div>

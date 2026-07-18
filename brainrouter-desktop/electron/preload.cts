@@ -46,6 +46,11 @@ contextBridge.exposeInMainWorld('brainrouter', {
   openWorkspaceWindow(workspaceRoot: string): Promise<{ opened: boolean; needsTrust?: boolean }> {
     return ipcRenderer.invoke('workspace:open-window', workspaceRoot);
   },
+  // Open the Design Studio as its own window. Omit the root to use the window's
+  // current workspace; pass one to open the studio straight onto that project.
+  openDesignWindow(workspaceRoot?: string): Promise<{ opened: boolean; needsTrust?: boolean }> {
+    return ipcRenderer.invoke('workspace:open-design-window', workspaceRoot ?? '');
+  },
   // T1 — workspace trust, backed by the shared CLI store (not localStorage).
   isWorkspaceTrusted(workspaceRoot: string): Promise<{ trusted: boolean }> {
     return ipcRenderer.invoke('workspace:isTrusted', workspaceRoot);

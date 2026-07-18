@@ -59,12 +59,16 @@ function reconcileWorkspaceBackground(workspaceRoot: string): void {
  * going in the background and is reaped only when idle past a TTL (see
  * hostPoolPolicy — the pure, unit-tested decision layer).
  */
+/** Which surface a window shows. 'design' is the standalone Design Studio. */
+type WindowView = 'workspace' | 'design';
+
 interface WinPool {
   win: BrowserWindow;
   hosts: Map<string, UtilityProcess>; // workspaceRoot → live host process
   lastSession: Map<string, string>;   // workspaceRoot → its last-viewed sessionKey
   pool: HostPoolState;                 // pure lifecycle state (tested policy)
   retiring: Set<string>;               // roots whose host we're intentionally killing
+  view: WindowView;                    // a design window coexists with the main one
 }
 const wins = new Map<number, WinPool>(); // webContents.id → WinPool
 
@@ -371,14 +375,18 @@ function activateWorkspace(wp: WinPool, workspaceRoot: string): void {
   try { recordTelemetry({ name: TELEMETRY_EVENTS.workspace_refresh, workspaceRoot, props: { mode: plan.mode } }); } catch { /* advisory */ }
 }
 
-function openWorkspaceWindow(workspaceRoot: string): void {
-  // Focus an existing window that already hosts this workspace (active OR parked).
+function openWorkspaceWindow(workspaceRoot: string, view: WindowView = 'workspace'): void {
+  // Focus an existing window showing this workspace on the SAME surface (active
+  // OR parked). The view is part of the identity, so opening the Design Studio
+  // for a workspace you already have open gives you a second window rather than
+  // just raising the first — that is the point of it being its own window.
   for (const wp of wins.values()) {
+    if (wp.view !== view) continue;
     if (wp.pool.activeRoot === workspaceRoot || wp.hosts.has(workspaceRoot)) { wp.win.focus(); return; }
   }
   const win = new BrowserWindow({
-    width: 1280, height: 840, minWidth: 900, minHeight: 600,
-    title: `BrainRouter — ${path.basename(workspaceRoot)}`,
+    width: view === 'design' ? 1440 : 1280, height: view === 'design' ? 900 : 840, minWidth: 900, minHeight: 600,
+    title: view === 'design' ? `Design — ${path.basename(workspaceRoot)}` : `BrainRouter — ${path.basename(workspaceRoot)}`,
     backgroundColor: '#262624',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // Pin the macOS traffic lights so their centre (~y20) sits on the 40px
@@ -426,7 +434,7 @@ function openWorkspaceWindow(workspaceRoot: string): void {
       return { action: 'deny' };
     });
   });
-  const wp: WinPool = { win, hosts: new Map(), lastSession: new Map(), pool: emptyPool(), retiring: new Set() };
+  const wp: WinPool = { win, hosts: new Map(), lastSession: new Map(), pool: emptyPool(), retiring: new Set(), view };
   wins.set(win.webContents.id, wp);
 
   // SEC: deny all renderer-initiated window.open (target=_blank, window.open, etc.).
@@ -450,8 +458,11 @@ function openWorkspaceWindow(workspaceRoot: string): void {
     }
   });
   activateWorkspace(wp, workspaceRoot); // spawns the first host
-  if (devUrl) void win.loadURL(devUrl);
-  else void win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  // The surface is carried in the hash so the renderer can pick it up before it
+  // paints, and so a reload keeps the window on the same surface.
+  const hash = view === 'design' ? '#design' : '';
+  if (devUrl) void win.loadURL(`${devUrl}${hash}`);
+  else void win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), hash ? { hash } : undefined);
 }
 
 // DESK-5o — overlay scrollbars: thin, auto-hiding, and (crucially) reserving
@@ -545,6 +556,18 @@ app.whenReady().then(() => {
     if (typeof workspaceRoot !== 'string' || !fs.existsSync(workspaceRoot)) return { opened: false };
     if (!isWorkspaceTrusted(workspaceRoot)) return { opened: false, needsTrust: true };
     openWorkspaceWindow(workspaceRoot);
+    return { opened: true };
+  });
+  // The Design Studio opens as its own window on the same workspace, so the
+  // canvas is not competing with the chat for the main window. Trust is
+  // enforced here too — this opens a host on the workspace like any other.
+  ipcMain.handle('workspace:open-design-window', (event, workspaceRoot: unknown) => {
+    const requested = typeof workspaceRoot === 'string' && workspaceRoot
+      ? workspaceRoot
+      : wins.get(event.sender.id)?.pool.activeRoot ?? '';
+    if (!requested || !fs.existsSync(requested)) return { opened: false };
+    if (!isWorkspaceTrusted(requested)) return { opened: false, needsTrust: true };
+    openWorkspaceWindow(requested, 'design');
     return { opened: true };
   });
   // T1 — trust persistence lives in the shared CLI store (not renderer

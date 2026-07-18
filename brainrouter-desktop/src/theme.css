@@ -5214,6 +5214,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-row.active, .session.active { background: rgba(255,255,255,.07); }
 .account-row { width: 100%; min-height: 54px; padding: 8px 6px; border: 0; border-top: 1px solid var(--border); color: var(--text); text-align: left; cursor: pointer; }
 .account-row:hover { background: rgba(255,255,255,.045); }
+/* Design sits directly above the account row and opens its own window. */
+.rail-design-row { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 7px 10px; margin-top: auto; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text-dim); text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
+.rail-design-row:hover { background: rgba(255,255,255,.045); color: var(--text); }
+.rail-design-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-design-row small { flex: none; color: var(--text-faint); font-size: 10px; }
+/* --- Design window (its own BrowserWindow, #design) --- */
+.design-window { display: flex; flex-direction: column; height: 100vh; min-height: 0; background: var(--bg); color: var(--text); }
+.design-window-bar { display: flex; align-items: center; gap: 10px; flex: none; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+.design-window-bar > * { -webkit-app-region: no-drag; }
+.design-window-brand { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 13px; }
+.design-window-project { display: flex; align-items: center; gap: 7px; max-width: 380px; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.design-window-project:hover { border-color: var(--border-strong); }
+.design-window-project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.design-window-menu { max-height: 60vh; overflow: auto; min-width: 320px; }
+.design-window-menu button { display: flex; align-items: center; gap: 8px; width: 100%; }
+.design-window-menu button small { margin-left: auto; max-width: 190px; overflow: hidden; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+.design-window-status { display: flex; align-items: center; gap: 6px; color: var(--text-faint); font-size: 12px; }
+.design-window-status.is-warn { color: var(--warn, #D9A441); }
+.design-window-body { flex: 1; min-height: 0; display: flex; }
+.design-window-body > * { flex: 1; min-width: 0; min-height: 0; }
 .avatar { color: var(--text); background: var(--raised); border: 1px solid var(--border-strong); }
 .account-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .account-name { display: block; font-size: 12px; font-weight: 560; }

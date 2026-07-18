@@ -189,6 +189,14 @@ export function installBridge(S: DevState, queries: Record<string, (args: Record
       return { rows: rows as Array<Record<string, unknown>>, truncated: rows.length >= limit };
     },
     onRecentsChanged: (l: (d: { recents: string[]; reason: string; workspaceRoot: string }) => void) => { recentsListeners.add(l); return () => recentsListeners.delete(l); },
+    // The browser preview has no second BrowserWindow to open, so the studio
+    // takes over this tab instead of failing silently on the click.
+    openDesignWindow: async (workspaceRoot?: string) => {
+      if (workspaceRoot) S.wsCurrent = workspaceRoot;
+      window.location.hash = 'design';
+      window.location.reload();
+      return { opened: true };
+    },
     markActivity: async (root: string) => {
       if (!S.wsRecents.includes(root)) S.wsRecents = [...S.wsRecents, root].slice(0, 10);
       recentsListeners.forEach((l) => l({ recents: S.wsRecents, reason: 'commit', workspaceRoot: root }));

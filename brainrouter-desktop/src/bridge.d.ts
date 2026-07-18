@@ -26,6 +26,9 @@ declare global {
       /** Open a workspace in a SEPARATE window (git worktrees) — never swaps the
        *  current window's active workspace / projects / chat. */
       openWorkspaceWindow(workspaceRoot: string): Promise<{ opened: boolean; needsTrust?: boolean }>;
+      /** Open the Design Studio as its own window. Omit the root to use this
+       *  window's current workspace. */
+      openDesignWindow(workspaceRoot?: string): Promise<{ opened: boolean; needsTrust?: boolean }>;
       /** T1 — workspace trust, backed by the shared CLI store (not localStorage). */
       isWorkspaceTrusted(workspaceRoot: string): Promise<{ trusted: boolean }>;
       trustWorkspace(workspaceRoot: string): Promise<{ trusted: boolean }>;
