@@ -8,6 +8,8 @@
  * pull in Electron's types; only the handful of methods/events we use are named.
  */
 
+import { WEBVIEW_UNAVAILABLE, isWebviewAttached, isWebviewUnavailableError, webviewErrorText } from './webviewGuard.js';
+
 export interface WebviewEl extends HTMLElement {
   src: string;
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
@@ -236,15 +238,70 @@ const A11Y_JS = `(() => {
   return out;
 })()`;
 
+// --- the guard boundary -----------------------------------------------------
+// CONTRACT: every function below NEVER THROWS AND NEVER REJECTS. A dead surface
+// yields the wrapper's neutral value — { ok:false, error } for commands, null
+// for readPick, [] for list reads. Callers therefore need no guard of their own,
+// which is the whole point: the same call is reached from React effect cleanups,
+// from timer callbacks and from async bodies, and each of those shapes turns one
+// identical synchronous throw into a different symptom — an error boundary, an
+// uncaught window error, an unhandled rejection — that has to be fixed a
+// different way. Guarding here fixes all three at once.
+//
+// Why swallowing is correct here rather than bug-hiding: the absorbed condition
+// is "the guest we were about to talk to no longer exists", which is the
+// EXPECTED outcome of an async teardown racing a synchronous native host object.
+// There is no work left to do and no caller who could act on it. And it is
+// narrowly scoped — only isWebviewUnavailableError() is silent. Any other
+// failure is both warned and returned in `error`, so a real guest-script fault
+// (a bad selector, a broken injected snippet) stays exactly as visible as it was.
+
+function onFail<T>(err: unknown, label: string, neutral: (err: unknown) => T): T {
+  // eslint-disable-next-line no-console
+  if (!isWebviewUnavailableError(err)) console.warn(`[webviewBridge] ${label} failed`, err);
+  return neutral(err);
+}
+
+function runInGuest<T>(wv: WebviewEl, label: string, code: string, userGesture: boolean, neutral: (err: unknown) => T): Promise<T> {
+  // Half 1 — attachment, checked exactly, before Electron is touched at all.
+  if (!isWebviewAttached(wv)) return Promise.resolve(neutral(new Error(WEBVIEW_UNAVAILABLE)));
+  let pending: Promise<unknown>;
+  // Half 2 — dom-ready, plus any attach/detach race the check above just lost.
+  // Observable only by calling. This try/catch is what converts the SYNCHRONOUS
+  // Electron throw into a resolved promise before it can escape into a React
+  // cleanup or a timer task.
+  try { pending = wv.executeJavaScript(code, userGesture); }
+  catch (err) { return Promise.resolve(onFail(err, label, neutral)); }
+  return pending.then((value) => value as T, (err) => onFail(err, label, neutral));
+}
+
+const asAction = (err: unknown): ActionResult => ({ ok: false, error: webviewErrorText(err) });
+
+/** Guarded raw eval, for callers that build their own snippet (PreviewCanvas). */
+export function execInGuest(wv: WebviewEl, code: string, userGesture = true): Promise<unknown> {
+  return runInGuest<unknown>(wv, 'execInGuest', code, userGesture, () => null);
+}
+
+/**
+ * Guarded call for the SYNCHRONOUS webview methods (reload/loadURL/getURL/
+ * goBack/goForward/…), which throw on exactly the same precondition. Returns
+ * `fallback` instead of throwing. `fallback` is a value, so pass a plain one —
+ * never a call with side effects, which would run on every invocation.
+ */
+export function callWebview<T>(wv: WebviewEl | null | undefined, label: string, fn: (wv: WebviewEl) => T, fallback: T): T {
+  if (!wv || !isWebviewAttached(wv)) return fallback;
+  try { return fn(wv); } catch (err) { return onFail(err, label, () => fallback); }
+}
+
 // --- wrappers ---
-export const extractLive = (wv: WebviewEl) => wv.executeJavaScript(EXTRACT_JS, true) as Promise<LiveElement[]>;
-export const setHighlight = (wv: WebviewEl, on: boolean) => wv.executeJavaScript(HIGHLIGHT_JS(on), true) as Promise<ActionResult>;
-export const startPick = (wv: WebviewEl) => wv.executeJavaScript(PICK_START_JS, true) as Promise<ActionResult>;
-export const readPick = (wv: WebviewEl) => wv.executeJavaScript(PICK_READ_JS, false) as Promise<null | { testid: string | null; tag: string; text: string; suggestion: string | null }>;
-export const cancelPick = (wv: WebviewEl) => wv.executeJavaScript(PICK_CANCEL_JS, true) as Promise<ActionResult>;
-export const instrumentNetwork = (wv: WebviewEl) => wv.executeJavaScript(NET_INSTRUMENT_JS, true) as Promise<ActionResult>;
-export const readNetwork = (wv: WebviewEl) => wv.executeJavaScript(NET_READ_JS, false) as Promise<NetworkEntry[]>;
-export const a11ySnapshot = (wv: WebviewEl) => wv.executeJavaScript(A11Y_JS, false) as Promise<Array<{ role: string; name: string; testid?: string }>>;
+export const extractLive = (wv: WebviewEl) => runInGuest<LiveElement[]>(wv, 'extractLive', EXTRACT_JS, true, () => []);
+export const setHighlight = (wv: WebviewEl, on: boolean) => runInGuest<ActionResult>(wv, 'setHighlight', HIGHLIGHT_JS(on), true, asAction);
+export const startPick = (wv: WebviewEl) => runInGuest<ActionResult>(wv, 'startPick', PICK_START_JS, true, asAction);
+export const readPick = (wv: WebviewEl) => runInGuest<null | { testid: string | null; tag: string; text: string; suggestion: string | null }>(wv, 'readPick', PICK_READ_JS, false, () => null);
+export const cancelPick = (wv: WebviewEl) => runInGuest<ActionResult>(wv, 'cancelPick', PICK_CANCEL_JS, true, asAction);
+export const instrumentNetwork = (wv: WebviewEl) => runInGuest<ActionResult>(wv, 'instrumentNetwork', NET_INSTRUMENT_JS, true, asAction);
+export const readNetwork = (wv: WebviewEl) => runInGuest<NetworkEntry[]>(wv, 'readNetwork', NET_READ_JS, false, () => []);
+export const a11ySnapshot = (wv: WebviewEl) => runInGuest<Array<{ role: string; name: string; testid?: string }>>(wv, 'a11ySnapshot', A11Y_JS, false, () => []);
 
 export function tap(wv: WebviewEl, target: string, hint?: ResolveHint): Promise<ActionResult> {
   const js = `(() => { ${RESOLVE_FN}
@@ -256,7 +313,7 @@ export function tap(wv: WebviewEl, target: string, hint?: ResolveHint): Promise<
     window.__brCursorMoveTo(el);
     return new Promise(function(__res){ setTimeout(function(){ try{ window.__brCursorPulse(); }catch(e){} ${FLASH} el.click(); __res({ ok:true }); }, ${CURSOR_TRAVEL_MS}); });
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'tap', js, true, asAction);
 }
 
 export function typeText(wv: WebviewEl, target: string, text: string, hint?: ResolveHint): Promise<ActionResult> {
@@ -271,7 +328,7 @@ export function typeText(wv: WebviewEl, target: string, text: string, hint?: Res
     window.__brCursorMoveTo(el);
     return new Promise(function(__res){ setTimeout(function(){ try{ window.__brCursorPulse(); }catch(e){} ${FLASH} ${doType} __res({ ok:true, value:${val} }); }, ${CURSOR_TRAVEL_MS}); });
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'typeText', js, true, asAction);
 }
 
 export function assertVisible(wv: WebviewEl, target: string, hint?: ResolveHint): Promise<ActionResult> {
@@ -287,7 +344,7 @@ export function assertVisible(wv: WebviewEl, target: string, hint?: ResolveHint)
     window.__brCursorMoveTo(el);
     return new Promise(function(__res){ setTimeout(function(){ ${FLASH} __res({ ok:true }); }, ${CURSOR_TRAVEL_MS}); });
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'assertVisible', js, true, asAction);
 }
 
 // Toggle the on-page cursor indicator. When on, the overlay is installed (hidden
@@ -301,13 +358,13 @@ export function setCursorEnabled(wv: WebviewEl, on: boolean): Promise<ActionResu
     else { try{ var c=document.getElementById('__brCursor'); if(c&&c.parentNode) c.parentNode.removeChild(c); var s=document.getElementById('__brCursorStyle'); if(s&&s.parentNode) s.parentNode.removeChild(s); }catch(e){} }
     return { ok:true };
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'setCursorEnabled', js, true, asAction);
 }
 
 /** Hide the cursor indicator (used just before capturePage so it never bleeds into a shot). */
 export function hideCursor(wv: WebviewEl): Promise<ActionResult> {
   const js = `(() => { try{ var c=document.getElementById('__brCursor'); if(c) c.style.opacity='0'; }catch(e){} return { ok:true }; })()`;
-  return wv.executeJavaScript(js, false) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'hideCursor', js, false, asAction);
 }
 
 // Persistent hover outline for the Accessibility list: resolve the element the
@@ -324,7 +381,7 @@ export function highlightEl(wv: WebviewEl, target: string, hint?: ResolveHint): 
     el.scrollIntoView({block:'center',inline:'nearest'});
     return { ok:true };
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'highlightEl', js, true, asAction);
 }
 
 /** Remove the hover outline set by highlightEl, restoring the element's prior inline outline. */
@@ -333,5 +390,5 @@ export function clearHighlight(wv: WebviewEl): Promise<ActionResult> {
     try { var p = window.__browserHoverEl; if (p && p.el) { p.el.style.outline = p.o || ''; p.el.style.outlineOffset = p.oo || ''; } } catch(e){}
     window.__browserHoverEl=null; return { ok:true };
   })()`;
-  return wv.executeJavaScript(js, true) as Promise<ActionResult>;
+  return runInGuest<ActionResult>(wv, 'clearHighlight', js, true, asAction);
 }

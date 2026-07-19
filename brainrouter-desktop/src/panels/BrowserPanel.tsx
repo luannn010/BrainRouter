@@ -349,7 +349,9 @@ export function BrowserPanel(): React.ReactElement {
     const finish = (): void => { if (done) return; done = true; wv.removeEventListener('dom-ready', finish); resolve(); };
     wv.addEventListener('dom-ready', finish);
     setUrl(u); setUrlDraft(u); try { localStorage.setItem(URL_KEY, u); } catch { /* ignore */ }
-    wv.loadURL(u).catch(() => finish());
+    // loadURL throws SYNCHRONOUSLY on a detached or pre-dom-ready webview, and
+    // a throw inside this executor rejects loadAndWait with nobody catching it.
+    try { wv.loadURL(u).catch(() => finish()); } catch { finish(); }
     setTimeout(finish, 9000);
   });
 
@@ -409,7 +411,10 @@ export function BrowserPanel(): React.ReactElement {
       let payload: { id?: string; title?: string; steps?: StoryStep[] } | null = null;
       try { payload = JSON.parse(localStorage.getItem('br-browser-runstory') || 'null'); } catch { payload = null; }
       if (!payload || !Array.isArray(payload.steps) || !payload.steps.length) return;
-      void runStory(url || urlRef.current, payload.title || 'story', payload.steps, payload.id);
+      // A story that dies mid-run must say so; `void` alone left the failure as
+      // an unhandled rejection and the status frozen on the last good step.
+      void runStory(url || urlRef.current, payload.title || 'story', payload.steps, payload.id)
+        .catch((error) => setStatus(error instanceof Error ? error.message : String(error)));
     };
     window.addEventListener('br-browser-runstory', onRunStory);
     return () => window.removeEventListener('br-browser-runstory', onRunStory);

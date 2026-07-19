@@ -1,6 +1,7 @@
 // brainrouter-desktop/src/panels/design/PreviewCanvas.tsx
 import React, { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
-import { startPick as wvStartPick, readPick, cancelPick, type WebviewEl } from '../../lib/browser/webviewBridge.js';
+import { startPick as wvStartPick, readPick, cancelPick, callWebview, execInGuest, type WebviewEl } from '../../lib/browser/webviewBridge.js';
+import { isWebviewAttached } from '../../lib/browser/webviewGuard.js';
 import type { DraftOperation } from '../../lib/design/designElements.js';
 import { buildApplyPayload, buildApplyScript } from '../../lib/design/designProperties.js';
 import { buildMeasureScript, MEASURED_CSS_PROPERTIES, parseMeasurement, type MeasuredElement } from '../../lib/design/designMeasure.js';
@@ -99,7 +100,9 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
     if (wv && workspaceRoot) {
       const url = fileUrlFor(workspaceRoot, selected.path);
       webviewStateRef.current = queueWebviewUrl(webviewStateRef.current, url);
-      if (webviewStateRef.current.ready) void wv.loadURL(url).catch(() => { /* policy refusal or missing file — surfaced by did-fail-load */ });
+      // callWebview, not a bare call: `ready` is never reset, so it stays true
+      // for a detached element and loadURL would throw synchronously.
+      if (webviewStateRef.current.ready) callWebview(wv, 'loadURL', (el) => { void el.loadURL(url).catch(() => { /* policy refusal or missing file — surfaced by did-fail-load */ }); }, undefined);
       return;
     }
     const frame = iframeRef.current;
@@ -116,7 +119,7 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
     reload: () => {
       if (wvRef.current) {
         if (!webviewStateRef.current.ready) { webviewStateRef.current.pendingUrl = webviewStateRef.current.currentUrl ?? lastSrcRef.current; return; }
-        wvRef.current.reload(); return;
+        callWebview(wvRef.current, 'reload', (el) => el.reload(), undefined); return;
       }
       // Re-assigning src reloads the iframe document (best-effort in browser).
       if (iframeRef.current && lastSrcRef.current) iframeRef.current.src = lastSrcRef.current;
@@ -126,7 +129,9 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
       const wv = target ?? wvRef.current;
       if (wv && webviewStateRef.current.ready) {
         const code = buildApplyScript(operations, boxes);
-        if (code) await wv.executeJavaScript(code, true);
+        // Guarded: `ready` stays true after the element detaches, so this races
+        // teardown and used to reject with nobody listening.
+        if (code) await execInGuest(wv, code, true);
         return;
       }
       // Browser fallback: send resolved DATA, never code. Prototypes ship
@@ -142,7 +147,7 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
       if (wv && webviewStateRef.current.ready) {
         // Electron: executeJavaScript is injected by the embedder, so unlike an
         // in-page eval it is not blocked by the prototype's CSP.
-        try { return parseMeasurement(await wv.executeJavaScript(buildMeasureScript(ref), false)); } catch { return null; }
+        try { return parseMeasurement(await execInGuest(wv, buildMeasureScript(ref), false)); } catch { return null; }
       }
       const frame = iframeRef.current;
       if (!frame?.contentWindow) return null;
@@ -171,6 +176,11 @@ export const PreviewCanvas = forwardRef<PreviewHandle, {
         let stopped = false;
         void wvStartPick(wv);
         const poll = setInterval(() => {
+          // Disarm on the element leaving the document rather than trusting the
+          // cleanup to fire: when the canvas unmounts because its node was
+          // hidden, the arming effect never re-runs and stop() is never called,
+          // so this interval would otherwise poll a dead guest forever.
+          if (!isWebviewAttached(wv)) { stopped = true; clearInterval(poll); return; }
           void readPick(wv).then((r) => {
             if (stopped || !r) return;
             stopped = true; clearInterval(poll);
